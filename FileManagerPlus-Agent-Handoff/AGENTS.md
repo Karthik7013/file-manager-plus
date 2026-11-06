@@ -1,4 +1,4 @@
-# File Manager + — OpenCode project instructions
+# File Manager + — project instructions
 
 ## Mission
 Build File Manager + as a free, privacy-first, offline-first Android file manager and media player for Android phones and Android TV.

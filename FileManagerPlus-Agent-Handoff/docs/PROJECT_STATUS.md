@@ -44,7 +44,7 @@ Last reconciled against the supplied source archive: `FileManagerPlus-MVP1-incre
 ## Validation status
 - Archive integrity was checked previously.
 - No verified Gradle compile, complete Gradle test run, APK install, physical phone test, Android TV test, USB OTG test, or SD-card test is established by the handoff context.
-- Treat all build/test status as unknown until OpenCode runs the commands in the current environment and records exact output.
+- Treat all build/test status as unknown until the agent runs the commands in the current environment and records exact output.
 
 ## Important caveats
 - SAF providers may not support every rename/delete/move/metadata operation.
