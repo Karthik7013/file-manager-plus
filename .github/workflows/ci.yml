@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main, kilo/**]
+  pull_request:
+    branches: [main, kilo/**]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: actions/setup-gradle@v4
+
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.11.1
+
+      - name: Run unit tests
+        run: ./gradlew --no-daemon --max-workers=2 test
+
+      - name: Assemble debug APK
+        run: ./gradlew --no-daemon --max-workers=2 :app:assembleDebug
