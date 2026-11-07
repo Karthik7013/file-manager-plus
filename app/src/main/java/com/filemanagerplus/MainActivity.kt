@@ -57,9 +57,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val systemDark = isSystemInDarkTheme()
             var useDark by remember { mutableStateOf(systemDark) }
-            val hasStorageAccess by remember {
-                mutableStateOf(StorageRepository.hasAllFilesAccess(this@MainActivity))
-            }
+            val hasStorageAccess = StorageRepository.hasAllFilesAccess(this@MainActivity)
             MaterialTheme(colorScheme = if (useDark) darkColorScheme() else lightColorScheme()) {
                 if (!hasStorageAccess) {
                     PermissionScreen(
