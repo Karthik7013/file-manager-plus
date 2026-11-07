@@ -47,6 +47,8 @@ Last reconciled against the supplied source archive: `FileManagerPlus-MVP1-incre
 - Treat all build/test status as unknown until the agent runs the commands in the current environment and records exact output.
 
 ## Important caveats
+- SAF is the only storage access model; no `MANAGE_EXTERNAL_STORAGE` permission is requested. Users must explicitly grant a folder via the system picker before any files are visible.
+- App-private directories (`Android/data/`) and system folders are not accessible through SAF on Android 10+.
 - SAF providers may not support every rename/delete/move/metadata operation.
 - Recursive scans/copy/move can be slow on large or remote trees.
 - The current usage summary only counts sizes reported by the selected folder's provider.

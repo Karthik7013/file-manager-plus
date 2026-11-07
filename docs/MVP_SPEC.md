@@ -6,14 +6,14 @@ A native Android file manager and media player for Android phones and Android TV
 ## Principles
 - Free, no advertisements, no analytics/tracking, no account.
 - Offline-first local file management.
-- Use SAF and user-granted access; avoid broad storage permissions.
+- Use SAF and user-granted access; avoid broad storage permissions. No `MANAGE_EXTERNAL_STORAGE` permission is requested — users must explicitly grant a folder via the system picker before any files are visible.
 - Keep UI separate from core storage, networking, and media logic.
 - Minimal build/dependency footprint; development must remain practical on an 8 GB RAM computer.
 - TV navigation must work with a physical remote/D-pad.
 - Removable USB and SD storage should work through Android-supported document providers.
 
 ## Core file management
-- Browse user-selected storage and nested directories.
+- Browse the user-selected SAF folder and its nested directories (not all of internal storage).
 - Create folders.
 - Copy, move, rename, delete files/folders.
 - Search.

@@ -66,7 +66,26 @@ For an 8 GB machine, close memory-heavy apps, build one variant at a time, and t
 
 ## Storage behavior and limitations
 
-The app uses SAF instead of requesting broad `MANAGE_EXTERNAL_STORAGE` access. The user chooses a folder. Android and individual document providers can restrict root folders, app-private directories, removable volumes, and particular mutation operations. Providers may not support rename, delete, move, or report size/date metadata. Recursive copy and usage scans can take time on large or remote folders; copy/move currently do not yet expose progress or cancellation.
+### SAF-only access (no broad storage permission)
+
+File Manager + uses Android's **Storage Access Framework (SAF)** instead of requesting the broad `MANAGE_EXTERNAL_STORAGE` ("all files access") permission. This means:
+
+- **You must choose a folder first.** When you open the app, it shows "Choose a folder to start browsing." Tap **Choose storage** and pick a folder in the system picker. The app can only see and modify files inside the folder you grant.
+- **The grant is persisted.** Once you've chosen a folder, the app remembers it so you don't have to re-pick every launch.
+- **No `MANAGE_EXTERNAL_STORAGE` permission.** Many Play Store file managers request this special permission so they can show all of internal storage (`Android/`, `DCIM`, `Download`, etc.) immediately. File Manager + deliberately does **not** request it, to stay privacy-first and avoid broad all-files access.
+
+### What you can and can't see
+
+Because access is scoped to your chosen SAF folder:
+
+- **You can see:** Nested directories and files inside the folder you picked (e.g., `DCIM/`, `Download/`, or any subfolder you select).
+- **You may not see:** App-private directories under `Android/data/`, system directories, or folders the document provider doesn't expose. On Android 10+ (scoped storage), the platform itself restricts what SAF providers can show, even if you pick them.
+
+If you expected to see all of internal storage right away, that's the difference between SAF (this app) and `MANAGE_EXTERNAL_STORAGE` (many Play Store file managers). The trade-off: SAF is more private and doesn't require a special Play Store declaration, but it requires an upfront folder choice.
+
+### Provider limitations
+
+Android and individual document providers can restrict root folders, app-private directories, removable volumes, and particular mutation operations. Providers may not support rename, delete, move, or report size/date metadata. Recursive copy and usage scans can take time on large or remote folders; copy/move currently do not yet expose progress or cancellation.
 
 The usage summary is computed recursively for the selected SAF folder. It sums only sizes reported by the provider and separately counts files whose sizes are unavailable. It cannot report total device free space through the SAF tree alone.
 
