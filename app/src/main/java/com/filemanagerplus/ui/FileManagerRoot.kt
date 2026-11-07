@@ -118,7 +118,7 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
         }
     }
 
-    private fun handlePendingTransfer(destinationDirectoryPath: String) {
+    fun handlePendingTransfer(destinationDirectoryPath: String) {
         val request = pendingTransfer
         if (request != null) {
             scope.launch {
@@ -165,7 +165,7 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
         }
     }
 
-    private fun openNonMediaFile(item: StorageItem) {
+    fun openNonMediaFile(item: StorageItem) {
         val file = File(item.path)
         val uri: Uri = try {
             FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)
@@ -502,6 +502,7 @@ private fun TvFileManagerScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RootsScreen(
     title: String,
