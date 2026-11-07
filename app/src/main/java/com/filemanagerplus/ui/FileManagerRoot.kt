@@ -38,6 +38,7 @@ private enum class FileAction { DETAILS, RENAME, COPY, MOVE, DELETE }
 private data class PendingTransfer(
     val item: StorageItem,
     val sourceParent: String,
+    val destUri: Uri?,
     val move: Boolean
 )
 
@@ -95,22 +96,32 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
         refreshListing()
     }
 
-    fun handlePendingTransfer(destinationDirectoryPath: String) {
+    fun handlePendingTransfer(destUri: Uri) {
         val request = pendingTransfer
         if (request != null) {
             scope.launch {
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
-                        if (request.move && repository.samePath(request.sourceParent, destinationDirectoryPath)) {
-                            error("Choose a different folder to move this item")
-                        }
-                        if (request.item.isDirectory && repository.samePath(request.item.path, destinationDirectoryPath)) {
-                            error("A folder cannot be copied or moved into itself")
-                        }
-                        if (request.move) {
-                            repository.move(request.item.path, destinationDirectoryPath)
+                        if (request.item.isDirectory) {
+                            // Check if dest URI path contains source path (self/descendant move)
+                            if (destUri.toString().contains(request.item.path)) {
+                                error("A folder cannot be moved into itself or a descendant")
+                            }
+                            if (repository.destinationExistsUri(destUri, context.contentResolver, request.item.name)) {
+                                error("'${request.item.name}' already exists in the destination")
+                            }
+                            repository.copyDirectoryToUri(request.item.path, destUri, context.contentResolver)
+                            if (request.move) {
+                                repository.delete(request.item.path)
+                            }
                         } else {
-                            repository.copy(request.item.path, destinationDirectoryPath)
+                            if (repository.destinationExistsUri(destUri, context.contentResolver, request.item.name)) {
+                                error("'${request.item.name}' already exists in the destination")
+                            }
+                            repository.copyToUri(request.item.path, destUri, context.contentResolver)
+                            if (request.move) {
+                                repository.delete(request.item.path)
+                            }
                         }
                     }
                 }
@@ -153,10 +164,7 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { destinationUri ->
         if (destinationUri != null) {
-            val destPath = destinationUri.path
-            if (destPath != null) {
-                handlePendingTransfer(destPath)
-            }
+            handlePendingTransfer(destinationUri)
         } else {
             pendingTransfer = null
         }
@@ -191,7 +199,7 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
                 if (parent == null) {
                     message = "Select a folder first"
                 } else {
-                    pendingTransfer = PendingTransfer(item, parent, action == FileAction.MOVE)
+                    pendingTransfer = PendingTransfer(item, parent, null, action == FileAction.MOVE)
                     destinationPicker.launch(null)
                 }
             }

@@ -1,9 +1,14 @@
 package com.filemanagerplus.data
 
+import android.content.ContentResolver
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.text.DateFormat
 import java.util.Date
 
@@ -163,6 +168,14 @@ class StorageRepository(private val context: Context) {
         )
     }
 
+    private fun copyStream(input: InputStream, output: OutputStream, bufferSize: Int = 8192) {
+        val buffer = ByteArray(bufferSize)
+        var read: Int
+        while (input.read(buffer).also { read = it } != -1) {
+            output.write(buffer, 0, read)
+        }
+    }
+
     /** Moves a file or directory. Falls back to copy-then-delete if rename fails. */
     fun move(sourcePath: String, destinationDirectoryPath: String): String {
         val source = File(sourcePath)
@@ -173,6 +186,85 @@ class StorageRepository(private val context: Context) {
         val copied = copy(sourcePath, destinationDirectoryPath)
         delete(sourcePath)
         return copied
+    }
+
+    /** Copies a file to a SAF destination URI using ContentResolver. */
+    fun copyToUri(sourcePath: String, destUri: Uri, resolver: ContentResolver): String {
+        val source = File(sourcePath)
+        require(source.exists() && source.isFile) { "Source file does not exist: $sourcePath" }
+        val destFile = DocumentFile.fromTreeUri(resolver, destUri)
+            ?: error("Cannot access destination URI: $destUri")
+        val targetFile = destFile.createFile(null, source.name)
+            ?: error("Cannot create file in destination: $source.name")
+        val output = resolver.openOutputStream(targetFile.uri)
+            ?: error("Cannot open output stream for destination")
+        try {
+            source.inputStream().use { input ->
+                copyStream(input, output)
+            }
+        } finally {
+            output.close()
+        }
+        return targetFile.uri.toString()
+    }
+
+    /** Copies a directory recursively to a SAF destination URI. */
+    fun copyDirectoryToUri(sourcePath: String, destUri: Uri, resolver: ContentResolver): String {
+        val source = File(sourcePath)
+        require(source.exists() && source.isDirectory) { "Source directory does not exist: $sourcePath" }
+        val destFile = DocumentFile.fromTreeUri(resolver, destUri)
+            ?: error("Cannot access destination URI: $destUri")
+        val targetDir = destFile.createDirectory(source.name)
+            ?: error("Cannot create directory in destination: $source.name")
+        source.listFiles()?.forEach { child ->
+            if (child.isDirectory) {
+                copyDirectoryToUri(child.absolutePath, targetDir.uri, resolver)
+            } else {
+                copyToUri(child.absolutePath, targetDir.uri, resolver)
+            }
+        }
+        return targetDir.uri.toString()
+    }
+
+    /** Moves a file to a SAF destination URI: copy then delete source. */
+    fun moveToUri(sourcePath: String, destUri: Uri, resolver: ContentResolver): String {
+        val source = File(sourcePath)
+        val result = if (source.isDirectory) {
+            copyDirectoryToUri(sourcePath, destUri, resolver)
+        } else {
+            copyToUri(sourcePath, destUri, resolver)
+        }
+        delete(sourcePath)
+        return result
+    }
+
+    /** Checks whether a source path would be moved/copied into itself or a descendant. */
+    fun isPathWithin(sourcePath: String, potentialParentPath: String): Boolean {
+        val sourceFile = File(sourcePath).canonicalFile
+        val parentFile = File(potentialParentPath).canonicalFile
+        return sourceFile.path.startsWith(parentFile.path + File.separator)
+    }
+
+    /** Checks whether a source path would be moved/copied into itself or a descendant under a SAF URI. */
+    fun isPathWithinUri(sourcePath: String, destUri: Uri, resolver: ContentResolver): Boolean {
+        val sourceFile = File(sourcePath).canonicalFile
+        val destFile = DocumentFile.fromTreeUri(resolver, destUri)
+            ?: return false
+        val destPath = destFile.uri.toString()
+        // If dest URI points to a path that contains the source, the source is within dest
+        return destPath.contains(sourceFile.path) || sourceFile.path.startsWith(destPath)
+    }
+
+    /** Checks whether a destination path already contains an item with the same name. */
+    fun destinationExists(destinationDirectoryPath: String, name: String): Boolean {
+        return File(File(destinationDirectoryPath), name).exists()
+    }
+
+    /** Checks whether a SAF destination already contains an item with the same name. */
+    fun destinationExistsUri(destUri: Uri, resolver: ContentResolver, name: String): Boolean {
+        val destFile = DocumentFile.fromTreeUri(resolver, destUri)
+            ?: return false
+        return destFile.listFiles()?.any { it.name == name } == true
     }
 
     /** Checks whether two paths refer to the same file. */
