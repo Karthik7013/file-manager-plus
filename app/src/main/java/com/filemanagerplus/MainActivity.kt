@@ -16,7 +16,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val isTv = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
         setContent {
-            var useDark by remember { mutableStateOf(isSystemInDarkTheme()) }
+            val systemDark = isSystemInDarkTheme()
+            var useDark by remember { mutableStateOf(systemDark) }
             MaterialTheme(colorScheme = if (useDark) darkColorScheme() else lightColorScheme()) {
                 FileManagerRoot(isTv = isTv, onToggleTheme = { useDark = !useDark }, isDark = useDark)
             }
