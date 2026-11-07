@@ -88,34 +88,11 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
         val parent = File(current).parentFile
         if (parent == null) return
         val parentPath = parent.absolutePath
-        // Don't go above the selected root
         if (rootPath != null && !parentPath.startsWith(rootPath!!)) return
         currentPath = parentPath
         title = repository.displayName(parentPath)
         message = ""
         refreshListing()
-    }
-
-    LaunchedEffect(currentPath, searchQuery, showHidden, sort) {
-        currentPath?.let { path ->
-            runCatching { repository.list(path, searchQuery, showHidden, sort) }
-                .onSuccess { items = it }
-                .onFailure { message = it.message ?: "Could not read this folder" }
-        }
-    }
-
-    val destinationPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { destinationUri ->
-        // Fallback destination picker for copy/move target selection
-        if (destinationUri != null) {
-            val destPath = destinationUri.path
-            if (destPath != null) {
-                handlePendingTransfer(destPath)
-            }
-        } else {
-            pendingTransfer = null
-        }
     }
 
     fun handlePendingTransfer(destinationDirectoryPath: String) {
@@ -148,6 +125,43 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
         }
     }
 
+    fun openNonMediaFile(item: StorageItem) {
+        val file = File(item.path)
+        val uri: Uri = try {
+            FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)
+        } catch (e: Exception) {
+            Uri.fromFile(file)
+        }
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, item.mimeType ?: "*/*")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+            context.startActivity(intent)
+        }.onFailure { message = "No app can open ${item.name}" }
+    }
+
+    LaunchedEffect(currentPath, searchQuery, showHidden, sort) {
+        currentPath?.let { path ->
+            runCatching { repository.list(path, searchQuery, showHidden, sort) }
+                .onSuccess { items = it }
+                .onFailure { message = it.message ?: "Could not read this folder" }
+        }
+    }
+
+    val destinationPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { destinationUri ->
+        if (destinationUri != null) {
+            val destPath = destinationUri.path
+            if (destPath != null) {
+                handlePendingTransfer(destPath)
+            }
+        } else {
+            pendingTransfer = null
+        }
+    }
+
     DisposableEffect(playback) { onDispose { playback.release() } }
 
     fun openItem(item: StorageItem) {
@@ -163,22 +177,6 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
         } else {
             openNonMediaFile(item)
         }
-    }
-
-    fun openNonMediaFile(item: StorageItem) {
-        val file = File(item.path)
-        val uri: Uri = try {
-            FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)
-        } catch (e: Exception) {
-            Uri.fromFile(file)
-        }
-        runCatching {
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, item.mimeType ?: "*/*")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            }
-            context.startActivity(intent)
-        }.onFailure { message = "No app can open ${item.name}" }
     }
 
     fun handleAction(item: StorageItem, action: FileAction) {

@@ -21,6 +21,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.filemanagerplus.data.StorageRepository
 import com.filemanagerplus.ui.FileManagerRoot
 
