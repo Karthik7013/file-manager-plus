@@ -24,9 +24,6 @@ jobs:
           api-level: 35
           build-tools: 35.0.0
 
-      - name: Set up Gradle
-        uses: actions/setup-gradle@v4
-
       - name: Generate Gradle wrapper
         run: gradle wrapper --gradle-version 8.11.1
 
