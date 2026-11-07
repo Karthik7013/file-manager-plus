@@ -28,7 +28,7 @@ Thank you for considering a contribution to File Manager +. This is a free, priv
 
 - Free, no ads, no tracking/analytics, no account requirement.
 - Offline-first for local files.
-- Android Storage Access Framework (SAF) for user-selected storage; do not add broad `MANAGE_EXTERNAL_STORAGE` without a compelling, documented requirement and maintainer approval. SAF is the only storage model — users must explicitly grant a folder before any files are visible.
+- Requests `MANAGE_EXTERNAL_STORAGE` for full storage access on Android 10+; users must grant this permission before files are visible. Do not remove this permission without a compelling, documented requirement and maintainer approval.
 - SMB credentials must never be logged or stored in plaintext.
 - Android TV must be usable with a D-pad/remote; focus must be visible and predictable.
 - Out of MVP scope: RAR extraction, ZIP creation, cloud storage, FTP.
@@ -39,7 +39,7 @@ Thank you for considering a contribution to File Manager +. This is a free, priv
 - Add unit tests for platform-independent logic and tests for bug fixes.
 - Keep dependencies minimal; explain any new dependency.
 - Never hardcode secrets, credentials, personal paths, or machine-specific SDK paths.
-- Handle SAF provider errors, null metadata, permissions, cancellation, and large directories.
+- Handle permission errors, null metadata, cancellation, and large directories.
 
 ## Ask before
 

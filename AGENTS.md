@@ -12,7 +12,7 @@ Build File Manager + as a free, privacy-first, offline-first Android file manage
 ## Technology and architecture
 - Kotlin, Jetpack Compose, Material 3.
 - MVVM + Repository; keep UI separate from storage, network, and media logic.
-- Android Storage Access Framework (SAF) for user-selected storage. Do not add broad `MANAGE_EXTERNAL_STORAGE` permission without a compelling, documented requirement.
+- `MANAGE_EXTERNAL_STORAGE` permission for full storage access on Android 10+. Direct `java.io.File` API instead of Storage Access Framework (SAF).
 - Minimum SDK 26; compile/target SDK 35 in the current snapshot.
 - JDK 17; Android Gradle Plugin 8.9.1; Kotlin 2.1.10; Gradle 8.11.1.
 - Preserve low-memory settings for an 8 GB development machine: Gradle heap 1.5 GB, max 2 workers, parallel disabled, Kotlin in-process.
@@ -22,14 +22,13 @@ Build File Manager + as a free, privacy-first, offline-first Android file manage
 - Free, no ads, no tracking/analytics, no account requirement.
 - Offline-first for local files.
 - SMB credentials must never be logged or stored in plaintext.
-- Respect SAF provider limitations and handle unsupported operations gracefully.
 - Android TV must be usable with a D-pad/remote; focus must be visible and predictable.
-- Support removable USB/SD storage through SAF where the device/provider allows it.
+- Support removable USB/SD storage through Android storage volumes.
 - Out of MVP scope: RAR extraction, ZIP creation, cloud storage, FTP.
 
 ## MVP feature priorities
 1. Reliable file browsing and operations: create, copy, move, rename, delete, search, sorting, details, hidden files, selected-folder usage summary.
-2. Parent navigation, robust error handling, operation progress/cancellation, and undo where feasible.
+2. Parent navigation ("go up"), robust error handling, operation progress/cancellation, and undo where feasible.
 3. Media3 in-app audio/video controls, seeking, queue basics, and background playback via MediaSessionService.
 4. Real SMB server/share connection and directory browsing (not a placeholder contract).
 5. Android TV D-pad/focus behavior and phone/TV responsive layouts.
@@ -38,7 +37,7 @@ Build File Manager + as a free, privacy-first, offline-first Android file manage
 ## Engineering rules
 - Inspect existing implementation before editing; reuse sound code.
 - Do not create fake implementations, placeholder success states, or claim unfinished features are complete.
-- Handle SAF provider errors, null metadata, permissions, cancellation, and large directories.
+- Handle permission errors, null metadata, cancellation, and large directories.
 - Avoid blocking the main thread; use coroutines/appropriate dispatchers.
 - Add unit tests for platform-independent logic and tests for bug fixes.
 - Keep dependencies minimal and explain any new dependency.

@@ -7,13 +7,14 @@ A native Android file manager and media player for Android phones and Android TV
 ### Implemented in this source increment
 - Kotlin + Jetpack Compose + Material 3 foundation, with separate mobile and TV presentation functions.
 - Light/dark theme switching.
-- Storage Access Framework (SAF) folder selection and nested directory listing; persistable read/write grants are attempted.
+- **Direct file access via `MANAGE_EXTERNAL_STORAGE`** — browse all of internal and external storage without a per-folder SAF picker.
+- Storage roots (internal storage, SD card) shown on first launch; navigate freely through directories including `DCIM`, `Download`, `Android/`, etc.
 - Create folders; search the current folder; sort by name, date, size, or type; optionally show dot-prefixed hidden entries.
-- File-item actions exposed in both mobile and TV layouts: details, rename, copy to a user-selected SAF folder, move to a user-selected SAF folder, and delete with confirmation.
-- Generic non-media file opening through Android's `ACTION_VIEW` intent when a compatible app is installed.
-- File details show name, MIME type, provider-reported size and modification time, and URI.
+- File-item actions exposed in both mobile and TV layouts: details, rename, copy to a folder, move to a folder, and delete with confirmation.
+- Generic non-media file opening through Android's `ACTION_VIEW` intent with FileProvider when a compatible app is installed.
+- File details show name, MIME type, size, modification time, and path.
 - Recursive selected-folder usage summary, calculated off the main thread. It reports known file bytes and counts; it is not a device-wide free-space measurement.
-- SAF repository helpers for recursive copy and move (provider-native move with copy/delete fallback).
+- Repository helpers for recursive copy and move (rename fallback to copy-then-delete).
 - Platform-independent filename validation with unit-test source coverage.
 - Media3 ExoPlayer URI playback foundation.
 - ZIP extraction to app cache with path-traversal protection.
@@ -21,9 +22,9 @@ A native Android file manager and media player for Android phones and Android TV
 ### Still incomplete for MVP 1.0
 - In-app audio/video transport controls, seek bar, queue/playlists, subtitle/audio-track selection, and MediaSessionService background playback.
 - Functional SMB server/share connection and directory browsing. `SmbRepository` remains an integration contract only; do not treat SMB as implemented.
-- A true parent-folder navigation stack, operation progress/cancellation, undo, and robust multi-select.
+- Operation progress/cancellation, undo, and robust multi-select.
 - TV focus restoration, remote transport controls, and physical Android TV validation.
-- USB OTG and SD-card validation on actual devices. Availability and write support depend on the Android device and SAF document provider.
+- USB OTG and SD-card validation on actual devices.
 - Automated Android/Compose integration tests and release signing.
 
 RAR extraction, ZIP creation, cloud storage, and FTP remain outside MVP 1.0.
@@ -66,39 +67,36 @@ For an 8 GB machine, close memory-heavy apps, build one variant at a time, and t
 
 ## Storage behavior and limitations
 
-### SAF-only access (no broad storage permission)
+### `MANAGE_EXTERNAL_STORAGE` access
 
-File Manager + uses Android's **Storage Access Framework (SAF)** instead of requesting the broad `MANAGE_EXTERNAL_STORAGE` ("all files access") permission. This means:
+File Manager + requests the **`MANAGE_EXTERNAL_STORAGE`** permission ("all files access") so it can browse the full internal and external storage without requiring a per-folder SAF picker. This works like many Play Store file managers:
 
-- **You must choose a folder first.** When you open the app, it shows "Choose a folder to start browsing." Tap **Choose storage** and pick a folder in the system picker. The app can only see and modify files inside the folder you grant.
-- **The grant is persisted.** Once you've chosen a folder, the app remembers it so you don't have to re-pick every launch.
-- **No `MANAGE_EXTERNAL_STORAGE` permission.** Many Play Store file managers request this special permission so they can show all of internal storage (`Android/`, `DCIM`, `Download`, etc.) immediately. File Manager + deliberately does **not** request it, to stay privacy-first and avoid broad all-files access.
+- **Storage roots shown on first launch.** The app lists available storage locations (internal storage, SD card, etc.) — pick one to start browsing.
+- **Navigate freely.** Browse directories including `DCIM/`, `Download/`, `Android/`, and other locations subject to Android's scoped storage rules.
+- **Runtime permission required.** On Android 10 (API 29) and above, the app asks you to grant "All files access" in system settings before showing any files. Without this permission, the app cannot list or modify files.
+- **FileProvider for sharing.** Non-media files are opened via `ACTION_VIEW` using `FileProvider` so other apps can access them.
 
 ### What you can and can't see
 
-Because access is scoped to your chosen SAF folder:
+With `MANAGE_EXTERNAL_STORAGE`:
 
-- **You can see:** Nested directories and files inside the folder you picked (e.g., `DCIM/`, `Download/`, or any subfolder you select).
-- **You may not see:** App-private directories under `Android/data/`, system directories, or folders the document provider doesn't expose. On Android 10+ (scoped storage), the platform itself restricts what SAF providers can show, even if you pick them.
+- **You can see:** Most of internal and external storage, including user files, `DCIM/`, `Download/`, and many system directories.
+- **You may not see:** App-private directories of other apps under `Android/data/<package>/` (even with this permission, Android 11+ protects other apps' private data), and some system-protected directories.
 
-If you expected to see all of internal storage right away, that's the difference between SAF (this app) and `MANAGE_EXTERNAL_STORAGE` (many Play Store file managers). The trade-off: SAF is more private and doesn't require a special Play Store declaration, but it requires an upfront folder choice.
+### Operation limitations
 
-### Provider limitations
-
-Android and individual document providers can restrict root folders, app-private directories, removable volumes, and particular mutation operations. Providers may not support rename, delete, move, or report size/date metadata. Recursive copy and usage scans can take time on large or remote folders; copy/move currently do not yet expose progress or cancellation.
-
-The usage summary is computed recursively for the selected SAF folder. It sums only sizes reported by the provider and separately counts files whose sizes are unavailable. It cannot report total device free space through the SAF tree alone.
+Copy, move, rename, and delete operations use direct file I/O. On large or remote folders, recursive scans can take time; copy/move currently do not yet expose progress or cancellation. The usage summary is computed recursively for the selected folder and sums file sizes; it cannot report total device free space.
 
 ## Privacy and product principles
 
 - Free, no ads, no tracking/analytics, and no account registration.
 - Local file management remains offline-first.
-- No broad all-files permission is requested in this implementation.
+- Requests `MANAGE_EXTERNAL_STORAGE` for full storage access; files are not logged or transmitted.
 - SMB credentials must not be logged or stored in plaintext when SMB is implemented.
 
 ## Next development priorities
 
-1. Add operation progress/cancellation and improve parent-folder navigation.
+1. Add operation progress/cancellation and undo for delete/move operations.
 2. Finish Media3 in-app controls and background playback with a media session service.
 3. Implement actual SMB connection and share browsing.
 4. Improve TV D-pad focus behavior and test remote controls.

@@ -22,18 +22,22 @@ import com.filemanagerplus.data.StorageRepository
 import com.filemanagerplus.data.StorageSort
 import com.filemanagerplus.data.StorageUsage
 import com.filemanagerplus.media.MediaPlaybackController
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.DateFormat
 import java.text.DecimalFormat
 import java.util.Date
+
+private const val FILE_PROVIDER_AUTHORITY = "com.filemanagerplus.fileprovider"
 
 private enum class FileAction { DETAILS, RENAME, COPY, MOVE, DELETE }
 
 private data class PendingTransfer(
     val item: StorageItem,
-    val sourceParent: Uri,
+    val sourceParent: String,
     val move: Boolean
 )
 
@@ -44,11 +48,11 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
     val playback = remember { MediaPlaybackController(context) }
     val scope = rememberCoroutineScope()
 
-    var rootUri by remember { mutableStateOf<Uri?>(null) }
-    var currentUri by remember { mutableStateOf<Uri?>(null) }
+    var rootPath by remember { mutableStateOf<String?>(null) }
+    var currentPath by remember { mutableStateOf<String?>(null) }
     var items by remember { mutableStateOf<List<StorageItem>>(emptyList()) }
     var title by remember { mutableStateOf("File Manager +") }
-    var message by remember { mutableStateOf("Choose a folder to start browsing.") }
+    var message by remember { mutableStateOf("Select a storage location to start browsing.") }
     var searchQuery by remember { mutableStateOf("") }
     var showHidden by remember { mutableStateOf(false) }
     var sort by remember { mutableStateOf(StorageSort.NAME) }
@@ -66,60 +70,70 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
     var storageLoading by remember { mutableStateOf(false) }
 
     fun refreshListing() {
-        val uri = currentUri ?: return
-        runCatching { repository.list(uri, searchQuery, showHidden, sort) }
+        val path = currentPath ?: return
+        runCatching { repository.list(path, searchQuery, showHidden, sort) }
             .onSuccess { items = it }
             .onFailure { message = it.message ?: "Could not read this folder" }
     }
 
-    fun rememberGrant(uri: Uri) {
-        runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-        }
+    fun selectRoot(root: StorageItem) {
+        rootPath = root.path
+        currentPath = root.path
+        title = repository.displayName(root.path)
+        message = ""
     }
 
-    LaunchedEffect(currentUri, searchQuery, showHidden, sort) {
-        currentUri?.let { uri ->
-            runCatching { repository.list(uri, searchQuery, showHidden, sort) }
+    fun goUp() {
+        val current = currentPath ?: return
+        val parent = File(current).parentFile
+        if (parent == null) return
+        val parentPath = parent.absolutePath
+        // Don't go above the selected root
+        if (rootPath != null && !parentPath.startsWith(rootPath!!)) return
+        currentPath = parentPath
+        title = repository.displayName(parentPath)
+        message = ""
+        refreshListing()
+    }
+
+    LaunchedEffect(currentPath, searchQuery, showHidden, sort) {
+        currentPath?.let { path ->
+            runCatching { repository.list(path, searchQuery, showHidden, sort) }
                 .onSuccess { items = it }
                 .onFailure { message = it.message ?: "Could not read this folder" }
-        }
-    }
-
-    val folderPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) {
-            rememberGrant(uri)
-            rootUri = uri
-            currentUri = uri
-            title = repository.displayName(uri)
-            message = ""
         }
     }
 
     val destinationPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { destinationUri ->
+        // Fallback destination picker for copy/move target selection
+        if (destinationUri != null) {
+            val destPath = destinationUri.path
+            if (destPath != null) {
+                handlePendingTransfer(destPath)
+            }
+        } else {
+            pendingTransfer = null
+        }
+    }
+
+    private fun handlePendingTransfer(destinationDirectoryPath: String) {
         val request = pendingTransfer
-        if (destinationUri != null && request != null) {
-            rememberGrant(destinationUri)
+        if (request != null) {
             scope.launch {
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
-                        if (request.move && repository.sameDocument(request.sourceParent, destinationUri)) {
+                        if (request.move && repository.samePath(request.sourceParent, destinationDirectoryPath)) {
                             error("Choose a different folder to move this item")
                         }
-                        if (request.item.isDirectory && repository.sameDocument(request.item.uri, destinationUri)) {
+                        if (request.item.isDirectory && repository.samePath(request.item.path, destinationDirectoryPath)) {
                             error("A folder cannot be copied or moved into itself")
                         }
                         if (request.move) {
-                            repository.move(request.item.uri, request.sourceParent, destinationUri)
+                            repository.move(request.item.path, destinationDirectoryPath)
                         } else {
-                            repository.copy(request.item.uri, destinationUri)
+                            repository.copy(request.item.path, destinationDirectoryPath)
                         }
                     }
                 }
@@ -131,8 +145,6 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
                 }
                 pendingTransfer = null
             }
-        } else {
-            pendingTransfer = null
         }
     }
 
@@ -140,22 +152,33 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
 
     fun openItem(item: StorageItem) {
         if (item.isDirectory) {
-            currentUri = item.uri
+            currentPath = item.path
             title = item.name
             message = ""
+            refreshListing()
         } else if (isPlayable(item)) {
-            runCatching { playback.play(item.uri) }
+            runCatching { playback.play(Uri.fromFile(File(item.path))) }
                 .onSuccess { message = "Playing: ${item.name}" }
                 .onFailure { message = it.message ?: "Could not play this file" }
         } else {
-            runCatching {
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(item.uri, item.mimeType ?: "*/*")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                context.startActivity(intent)
-            }.onFailure { message = "No app can open ${item.name}" }
+            openNonMediaFile(item)
         }
+    }
+
+    private fun openNonMediaFile(item: StorageItem) {
+        val file = File(item.path)
+        val uri: Uri = try {
+            FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)
+        } catch (e: Exception) {
+            Uri.fromFile(file)
+        }
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, item.mimeType ?: "*/*")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+            context.startActivity(intent)
+        }.onFailure { message = "No app can open ${item.name}" }
     }
 
     fun handleAction(item: StorageItem, action: FileAction) {
@@ -166,9 +189,9 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
                 renameText = item.name
             }
             FileAction.COPY, FileAction.MOVE -> {
-                val parent = currentUri
+                val parent = currentPath
                 if (parent == null) {
-                    message = "Choose a folder first"
+                    message = "Select a folder first"
                 } else {
                     pendingTransfer = PendingTransfer(item, parent, action == FileAction.MOVE)
                     destinationPicker.launch(null)
@@ -179,17 +202,17 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
     }
 
     fun goBack() {
-        val root = rootUri
-        if (root != null && currentUri != null && currentUri != root) {
-            // The first MVP navigation model returns to the granted root.
-            currentUri = root
+        val root = rootPath
+        if (root != null && currentPath != null && currentPath != root) {
+            currentPath = root
             title = repository.displayName(root)
             message = ""
+            refreshListing()
         }
     }
 
     fun calculateStorageUsage() {
-        val uri = rootUri ?: currentUri ?: return
+        val uri = rootPath ?: currentPath ?: return
         storageLoading = true
         storageUsage = null
         storageError = null
@@ -207,15 +230,12 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
 
     val sharedActions: (StorageItem, FileAction) -> Unit = { item, action -> handleAction(item, action) }
 
-    if (isTv) {
-        TvFileManagerScreen(
+    val showRoots = currentPath == null
+
+    if (showRoots) {
+        RootsScreen(
             title = title,
-            items = items,
-            message = message,
-            onChooseFolder = { folderPicker.launch(null) },
-            onOpen = ::openItem,
-            onAction = sharedActions,
-            onBack = ::goBack,
+            onRootSelected = ::selectRoot,
             onToggleTheme = onToggleTheme,
             isDark = isDark,
             searchQuery = searchQuery,
@@ -225,31 +245,56 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
             sort = sort,
             onSortChange = { sort = it },
             onCreateFolder = { showCreateFolder = true },
-            onStorageInfo = ::calculateStorageUsage
+            onStorageInfo = ::calculateStorageUsage,
+            onRefresh = { }
         )
     } else {
-        MobileFileManagerScreen(
-            title = title,
-            items = items,
-            message = message,
-            onChooseFolder = { folderPicker.launch(null) },
-            onOpen = ::openItem,
-            onAction = sharedActions,
-            onBack = ::goBack,
-            onToggleTheme = onToggleTheme,
-            isDark = isDark,
-            searchQuery = searchQuery,
-            onSearchChange = { searchQuery = it },
-            showHidden = showHidden,
-            onShowHiddenChange = { showHidden = it },
-            sort = sort,
-            onSortChange = { sort = it },
-            onCreateFolder = { showCreateFolder = true },
-            onStorageInfo = ::calculateStorageUsage
-        )
+        if (isTv) {
+            TvFileManagerScreen(
+                title = title,
+                items = items,
+                message = message,
+                onChooseRoot = { },
+                onGoUp = ::goUp,
+                onOpen = ::openItem,
+                onAction = sharedActions,
+                onBack = ::goBack,
+                onToggleTheme = onToggleTheme,
+                isDark = isDark,
+                searchQuery = searchQuery,
+                onSearchChange = { searchQuery = it },
+                showHidden = showHidden,
+                onShowHiddenChange = { showHidden = it },
+                sort = sort,
+                onSortChange = { sort = it },
+                onCreateFolder = { showCreateFolder = true },
+                onStorageInfo = ::calculateStorageUsage
+            )
+        } else {
+            MobileFileManagerScreen(
+                title = title,
+                items = items,
+                message = message,
+                onChooseRoot = { },
+                onGoUp = ::goUp,
+                onOpen = ::openItem,
+                onAction = sharedActions,
+                onBack = ::goBack,
+                onToggleTheme = onToggleTheme,
+                isDark = isDark,
+                searchQuery = searchQuery,
+                onSearchChange = { searchQuery = it },
+                showHidden = showHidden,
+                onShowHiddenChange = { showHidden = it },
+                sort = sort,
+                onSortChange = { sort = it },
+                onCreateFolder = { showCreateFolder = true },
+                onStorageInfo = ::calculateStorageUsage
+            )
+        }
     }
 
-    if (showCreateFolder && currentUri != null) {
+    if (showCreateFolder && currentPath != null) {
         AlertDialog(
             onDismissRequest = { showCreateFolder = false; newFolderName = "" },
             title = { Text("Create folder") },
@@ -263,7 +308,7 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
             },
             confirmButton = {
                 TextButton(enabled = newFolderName.isNotBlank(), onClick = {
-                    val parent = currentUri
+                    val parent = currentPath
                     if (parent != null) {
                         runCatching { repository.createFolder(parent, newFolderName) }
                             .onSuccess { message = "Folder created" }
@@ -289,7 +334,7 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
             },
             confirmButton = {
                 TextButton(enabled = renameText.isNotBlank(), onClick = {
-                    runCatching { repository.rename(item.uri, renameText) }
+                    runCatching { repository.rename(item.path, renameText) }
                         .onSuccess { message = "Renamed successfully" }
                         .onFailure { message = it.message ?: "Could not rename item" }
                     renameItem = null
@@ -304,10 +349,10 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
         AlertDialog(
             onDismissRequest = { deleteItem = null },
             title = { Text("Delete ${item.name}?") },
-            text = { Text("This permanently deletes the selected item if the storage provider allows it.") },
+            text = { Text("This permanently deletes the selected item.") },
             confirmButton = {
                 TextButton(onClick = {
-                    runCatching { repository.delete(item.uri) }
+                    runCatching { repository.delete(item.path) }
                         .onSuccess { message = "Deleted ${item.name}" }
                         .onFailure { message = it.message ?: "Could not delete item" }
                     deleteItem = null
@@ -326,9 +371,9 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     DetailLine("Name", item.name)
                     DetailLine("Type", if (item.isDirectory) "Folder" else item.mimeType ?: "Unknown")
-                    DetailLine("Size", if (item.isDirectory) "Calculated in Storage info" else if (item.sizeKnown) formatSize(item.size) else "Not reported by provider")
+                    DetailLine("Size", if (item.isDirectory) "Calculated in Storage info" else if (item.sizeKnown) formatSize(item.size) else "Not reported")
                     DetailLine("Modified", item.lastModified.takeIf { it > 0L }?.let { DateFormat.getDateTimeInstance().format(Date(it)) } ?: "Not reported")
-                    DetailLine("Location", item.uri.toString())
+                    DetailLine("Location", item.path)
                 }
             },
             confirmButton = { TextButton(onClick = { detailsItem = null }) { Text("Close") } }
@@ -350,7 +395,7 @@ fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
                         if (storageUsage!!.unknownSizeCount > 0) {
                             DetailLine("Files without reported size", storageUsage!!.unknownSizeCount.toString())
                         }
-                        Text("This is a recursive total for the selected SAF folder, not the device's full free-space figure.", style = MaterialTheme.typography.bodySmall)
+                        Text("This is a recursive total for the selected folder.", style = MaterialTheme.typography.bodySmall)
                     }
                     else -> Text("Storage usage is unavailable.")
                 }
@@ -379,7 +424,7 @@ private fun DetailLine(label: String, value: String) {
 @Composable
 private fun MobileFileManagerScreen(
     title: String, items: List<StorageItem>, message: String,
-    onChooseFolder: () -> Unit, onOpen: (StorageItem) -> Unit,
+    onChooseRoot: () -> Unit, onGoUp: () -> Unit, onOpen: (StorageItem) -> Unit,
     onAction: (StorageItem, FileAction) -> Unit, onBack: () -> Unit,
     onToggleTheme: () -> Unit, isDark: Boolean,
     searchQuery: String, onSearchChange: (String) -> Unit,
@@ -393,6 +438,7 @@ private fun MobileFileManagerScreen(
                 title = { Text(title, maxLines = 1) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } },
                 actions = {
+                    IconButton(onClick = onGoUp) { Icon(Icons.Default.ArrowUpward, "Go up") }
                     IconButton(onClick = onStorageInfo) { Icon(Icons.Default.Storage, "Storage usage") }
                     IconButton(onClick = onToggleTheme) {
                         Icon(if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode, "Toggle theme")
@@ -401,9 +447,9 @@ private fun MobileFileManagerScreen(
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(onClick = onChooseFolder, icon = {
-                Icon(Icons.Default.FolderOpen, null)
-            }, text = { Text("Choose folder") })
+            ExtendedFloatingActionButton(onClick = onCreateFolder, icon = {
+                Icon(Icons.Default.CreateNewFolder, null)
+            }, text = { Text("New folder") })
         }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
@@ -411,7 +457,7 @@ private fun MobileFileManagerScreen(
             if (message.isNotBlank()) Text(message, style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(vertical = 12.dp))
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                items(items, key = { it.uri.toString() }) { item ->
+                items(items, key = { it.path }) { item ->
                     FileRow(item, onClick = { onOpen(item) }, onAction = { action -> onAction(item, action) })
                 }
             }
@@ -419,10 +465,11 @@ private fun MobileFileManagerScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TvFileManagerScreen(
     title: String, items: List<StorageItem>, message: String,
-    onChooseFolder: () -> Unit, onOpen: (StorageItem) -> Unit,
+    onChooseRoot: () -> Unit, onGoUp: () -> Unit, onOpen: (StorageItem) -> Unit,
     onAction: (StorageItem, FileAction) -> Unit, onBack: () -> Unit,
     onToggleTheme: () -> Unit, isDark: Boolean,
     searchQuery: String, onSearchChange: (String) -> Unit,
@@ -433,12 +480,12 @@ private fun TvFileManagerScreen(
     Row(Modifier.fillMaxSize().padding(36.dp), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
         Column(Modifier.width(240.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("FILE MANAGER +", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Button(onClick = onChooseFolder, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.FolderOpen, null); Spacer(Modifier.width(8.dp)); Text("Choose storage")
+            Button(onClick = onGoUp, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.ArrowUpward, null); Spacer(Modifier.width(8.dp)); Text("Go up")
             }
-            OutlinedButton(onClick = onStorageInfo, modifier = Modifier.fillMaxWidth()) { Text("Storage usage") }
-            OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back") }
-            OutlinedButton(onClick = onToggleTheme, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = onStorageInfo, modifier = Modifier.fillMaxWidth()) { Text("Storage usage") }
+            Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back") }
+            Button(onClick = onToggleTheme, modifier = Modifier.fillMaxWidth()) {
                 Text(if (isDark) "Light theme" else "Dark theme")
             }
         }
@@ -447,8 +494,69 @@ private fun TvFileManagerScreen(
             FileListTools(searchQuery, onSearchChange, showHidden, onShowHiddenChange, sort, onSortChange, onCreateFolder)
             if (message.isNotBlank()) Text(message, modifier = Modifier.padding(vertical = 8.dp))
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(items, key = { it.uri.toString() }) { item ->
+                items(items, key = { it.path }) { item ->
                     TvFileRow(item, onClick = { onOpen(item) }, onAction = { action -> onAction(item, action) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RootsScreen(
+    title: String,
+    onRootSelected: (StorageItem) -> Unit,
+    onToggleTheme: () -> Unit,
+    isDark: Boolean,
+    searchQuery: String,
+    onSearchChange: (String) -> Unit,
+    showHidden: Boolean,
+    onShowHiddenChange: (Boolean) -> Unit,
+    sort: StorageSort,
+    onSortChange: (StorageSort) -> Unit,
+    onCreateFolder: () -> Unit,
+    onStorageInfo: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    val context = LocalContext.current
+    val repository = remember { StorageRepository(context) }
+    val roots by remember { mutableStateOf(repository.listRoots()) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(title, maxLines = 1) },
+                actions = {
+                    IconButton(onClick = onToggleTheme) {
+                        Icon(if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode, "Toggle theme")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
+            Text("Select storage location", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(16.dp))
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(roots, key = { it.path }) { root ->
+                    Card(
+                        modifier = Modifier.clickable { onRootSelected(root) },
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Row(
+                            Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Storage, null, modifier = Modifier.size(24.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(root.name, style = MaterialTheme.typography.bodyLarge)
+                                Text(root.path, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Icon(Icons.Default.ArrowForward, null)
+                        }
+                    }
                 }
             }
         }

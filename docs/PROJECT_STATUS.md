@@ -21,24 +21,24 @@ Last reconciled against the supplied source archive: `FileManagerPlus-MVP1-incre
 ## Present in the source snapshot
 - Compose/Material 3 app foundation and separate mobile/TV presentation functions.
 - Light/dark theme switching.
-- SAF folder selection and nested directory listing; persistable read/write grants are attempted.
-- Create folders; search current folder; sort by name/date/size/type; show/hide dot-prefixed entries.
-- File actions: details, rename, copy to selected SAF folder, move to selected SAF folder, delete with confirmation.
-- Generic file opening using Android `ACTION_VIEW`.
-- File details: name, MIME type, provider-reported size/date, URI.
+- `MANAGE_EXTERNAL_STORAGE` permission for full storage access; storage roots listed on first launch.
+- Direct file-based directory listing, create folders; search current folder; sort by name/date/size/type; show/hide dot-prefixed entries.
+- File actions: details, rename, copy to folder, move to folder, delete with confirmation.
+- Generic file opening using Android `ACTION_VIEW` with FileProvider.
+- File details: name, MIME type, size/date, path.
 - Recursive selected-folder usage summary off the main thread. This is not device-wide free-space reporting.
-- SAF copy/move helpers, including provider-native move with copy/delete fallback.
+- Repository helpers for recursive copy and move (rename fallback to copy-then-delete).
 - Filename validation helper and a unit-test source file.
 - Media3 ExoPlayer URI playback foundation.
 - ZIP extraction into app cache with path-traversal protection.
+- FileProvider configured for sharing files with other apps.
 
 ## Explicitly incomplete / not to be represented as done
 - Full in-app audio/video transport controls, seek bar, queue/playlists, subtitle/audio-track selection, and MediaSessionService background playback.
 - Real SMB server/share connection and directory browsing. `SmbRepository` is only an integration contract in this snapshot.
-- True parent-folder navigation stack.
 - Operation progress/cancellation, undo, and robust multi-select.
 - TV focus restoration, remote transport controls, and physical Android TV validation.
-- USB OTG/SD-card validation on real devices; behavior depends on Android and the SAF provider.
+- USB OTG/SD-card validation on real devices.
 - Android/Compose integration tests and release signing.
 
 ## Validation status
@@ -47,9 +47,8 @@ Last reconciled against the supplied source archive: `FileManagerPlus-MVP1-incre
 - Treat all build/test status as unknown until the agent runs the commands in the current environment and records exact output.
 
 ## Important caveats
-- SAF is the only storage access model; no `MANAGE_EXTERNAL_STORAGE` permission is requested. Users must explicitly grant a folder via the system picker before any files are visible.
-- App-private directories (`Android/data/`) and system folders are not accessible through SAF on Android 10+.
-- SAF providers may not support every rename/delete/move/metadata operation.
+- `MANAGE_EXTERNAL_STORAGE` permission is required on Android 10+; without it, no files are visible.
+- App-private directories of other apps (`Android/data/<package>/`) may not be accessible even with this permission on Android 11+.
 - Recursive scans/copy/move can be slow on large or remote trees.
-- The current usage summary only counts sizes reported by the selected folder's provider.
+- The current usage summary only counts sizes reported by the file system.
 - Do not infer feature completeness from dependencies or interface names.
