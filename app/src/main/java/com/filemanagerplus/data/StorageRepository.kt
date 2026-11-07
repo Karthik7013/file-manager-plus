@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
+import androidx.documentfile.provider.DocumentFile
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -264,7 +265,7 @@ class StorageRepository(private val context: Context) {
     fun destinationExistsUri(destUri: Uri, resolver: ContentResolver, name: String): Boolean {
         val destFile = DocumentFile.fromTreeUri(resolver, destUri)
             ?: return false
-        return destFile.listFiles()?.any { it.name == name } == true
+        return destFile.listFiles()?.any { file: DocumentFile -> file.name == name } == true
     }
 
     /** Checks whether two paths refer to the same file. */
