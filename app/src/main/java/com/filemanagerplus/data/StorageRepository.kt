@@ -33,7 +33,7 @@ data class StorageUsage(
 
 enum class StorageSort { NAME, DATE, SIZE, TYPE }
 
-class StorageRepository(private val context: Context) {
+class StorageRepository(private val context: Context?) {
 
     /** Returns available storage roots (e.g. internal storage, SD card). */
     fun listRoots(): List<StorageItem> {
@@ -191,9 +191,10 @@ class StorageRepository(private val context: Context) {
 
     /** Copies a file to a SAF destination URI using ContentResolver. */
     fun copyToUri(sourcePath: String, destUri: Uri, resolver: ContentResolver): String {
+        val ctx = context ?: error("Context required for SAF operations")
         val source = File(sourcePath)
         require(source.exists() && source.isFile) { "Source file does not exist: $sourcePath" }
-        val destFile = DocumentFile.fromTreeUri(context, destUri)
+        val destFile = DocumentFile.fromTreeUri(ctx, destUri)
             ?: error("Cannot access destination URI: $destUri")
         val targetFile = destFile.createFile("application/octet-stream", source.name)
             ?: error("Cannot create file in destination: $source.name")
@@ -211,9 +212,10 @@ class StorageRepository(private val context: Context) {
 
     /** Copies a directory recursively to a SAF destination URI. */
     fun copyDirectoryToUri(sourcePath: String, destUri: Uri, resolver: ContentResolver): String {
+        val ctx = context ?: error("Context required for SAF operations")
         val source = File(sourcePath)
         require(source.exists() && source.isDirectory) { "Source directory does not exist: $sourcePath" }
-        val destFile = DocumentFile.fromTreeUri(context, destUri)
+        val destFile = DocumentFile.fromTreeUri(ctx, destUri)
             ?: error("Cannot access destination URI: $destUri")
         val targetDir = destFile.createDirectory(source.name)
             ?: error("Cannot create directory in destination: $source.name")
@@ -248,11 +250,11 @@ class StorageRepository(private val context: Context) {
 
     /** Checks whether a source path would be moved/copied into itself or a descendant under a SAF URI. */
     fun isPathWithinUri(sourcePath: String, destUri: Uri, resolver: ContentResolver): Boolean {
+        val ctx = context ?: return false
         val sourceFile = File(sourcePath).canonicalFile
-        val destFile = DocumentFile.fromTreeUri(context, destUri)
+        val destFile = DocumentFile.fromTreeUri(ctx, destUri)
             ?: return false
         val destPath = destFile.uri.toString()
-        // If dest URI points to a path that contains the source, the source is within dest
         return destPath.contains(sourceFile.path) || sourceFile.path.startsWith(destPath)
     }
 
@@ -263,9 +265,10 @@ class StorageRepository(private val context: Context) {
 
     /** Checks whether a SAF destination already contains an item with the same name. */
     fun destinationExistsUri(destUri: Uri, resolver: ContentResolver, name: String): Boolean {
-        val destFile = DocumentFile.fromTreeUri(context, destUri)
+        val ctx = context ?: return false
+        val destFile = DocumentFile.fromTreeUri(ctx, destUri)
             ?: return false
-        return destFile.listFiles()?.any { file: DocumentFile -> file.name == name } == true
+        return destFile.listFiles().any { file: DocumentFile -> file.name == name }
     }
 
     /** Checks whether two paths refer to the same file. */
