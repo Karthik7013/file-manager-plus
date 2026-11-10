@@ -4,9 +4,9 @@ import android.content.Context
 import android.net.Uri
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -14,8 +14,8 @@ import com.filemanagerplus.data.FileCategory
 import com.filemanagerplus.data.StorageItem
 import com.filemanagerplus.data.StorageRepository
 import com.filemanagerplus.data.StorageSort
-import com.filemanagerplus.data.StorageUsage
 import com.filemanagerplus.media.MediaPlaybackController
+import java.io.File
 
 
 @Composable
