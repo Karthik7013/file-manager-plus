@@ -195,7 +195,7 @@ class StorageRepository(private val context: Context) {
         require(source.exists() && source.isFile) { "Source file does not exist: $sourcePath" }
         val destFile = DocumentFile.fromTreeUri(resolver, destUri)
             ?: error("Cannot access destination URI: $destUri")
-        val targetFile = destFile.createFile(null, source.name)
+        val targetFile = destFile.createFile("application/octet-stream", source.name)
             ?: error("Cannot create file in destination: $source.name")
         val output = resolver.openOutputStream(targetFile.uri)
             ?: error("Cannot open output stream for destination")
@@ -213,7 +213,7 @@ class StorageRepository(private val context: Context) {
     fun copyDirectoryToUri(sourcePath: String, destUri: Uri, resolver: ContentResolver): String {
         val source = File(sourcePath)
         require(source.exists() && source.isDirectory) { "Source directory does not exist: $sourcePath" }
-        val destFile = DocumentFile.fromTreeUri(resolver, destUri)
+        val destFile = DocumentFile.fromTreeUri(context, destUri)
             ?: error("Cannot access destination URI: $destUri")
         val targetDir = destFile.createDirectory(source.name)
             ?: error("Cannot create directory in destination: $source.name")
@@ -249,7 +249,7 @@ class StorageRepository(private val context: Context) {
     /** Checks whether a source path would be moved/copied into itself or a descendant under a SAF URI. */
     fun isPathWithinUri(sourcePath: String, destUri: Uri, resolver: ContentResolver): Boolean {
         val sourceFile = File(sourcePath).canonicalFile
-        val destFile = DocumentFile.fromTreeUri(resolver, destUri)
+        val destFile = DocumentFile.fromTreeUri(context, destUri)
             ?: return false
         val destPath = destFile.uri.toString()
         // If dest URI points to a path that contains the source, the source is within dest
@@ -263,7 +263,7 @@ class StorageRepository(private val context: Context) {
 
     /** Checks whether a SAF destination already contains an item with the same name. */
     fun destinationExistsUri(destUri: Uri, resolver: ContentResolver, name: String): Boolean {
-        val destFile = DocumentFile.fromTreeUri(resolver, destUri)
+        val destFile = DocumentFile.fromTreeUri(context, destUri)
             ?: return false
         return destFile.listFiles()?.any { file: DocumentFile -> file.name == name } == true
     }
