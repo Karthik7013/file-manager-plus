@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.filemanagerplus.data.FileCategory
 import com.filemanagerplus.data.StorageItem
 import com.filemanagerplus.data.StorageRepository
 import com.filemanagerplus.data.StorageSort
