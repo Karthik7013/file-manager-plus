@@ -502,7 +502,7 @@ private fun SettingsScreen(showHidden: Boolean, onShowHidden: (Boolean) -> Unit,
     Scaffold(topBar = { TopAppBar(title = { Text("Settings") }) }) { padding ->
         LazyColumn(Modifier.padding(padding).fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Text("Appearance", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
-            item { SettingsSwitch("Dark theme", "Use dark color scheme", isDark, onToggleTheme) }
+            item { SettingsSwitch("Dark theme", "Use dark color scheme", isDark) { _ -> onToggleTheme() } }
             item { HorizontalDivider() }
             item { Text("File browsing", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
             item { SettingsSwitch("Show hidden files", "Display files starting with .", showHidden, { onShowHidden(it) }) }
