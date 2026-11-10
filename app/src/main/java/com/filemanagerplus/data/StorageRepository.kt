@@ -193,7 +193,7 @@ class StorageRepository(private val context: Context) {
     fun copyToUri(sourcePath: String, destUri: Uri, resolver: ContentResolver): String {
         val source = File(sourcePath)
         require(source.exists() && source.isFile) { "Source file does not exist: $sourcePath" }
-        val destFile = DocumentFile.fromTreeUri(resolver, destUri)
+        val destFile = DocumentFile.fromTreeUri(context, destUri)
             ?: error("Cannot access destination URI: $destUri")
         val targetFile = destFile.createFile("application/octet-stream", source.name)
             ?: error("Cannot create file in destination: $source.name")
