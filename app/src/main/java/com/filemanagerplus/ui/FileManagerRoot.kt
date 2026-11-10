@@ -1,19 +1,28 @@
 package com.filemanagerplus.ui
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,415 +31,146 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
+import com.filemanagerplus.data.FileCategory
 import com.filemanagerplus.data.StorageItem
 import com.filemanagerplus.data.StorageRepository
 import com.filemanagerplus.data.StorageSort
 import com.filemanagerplus.data.StorageUsage
 import com.filemanagerplus.media.MediaPlaybackController
-import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.text.DateFormat
-import java.text.DecimalFormat
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 private const val FILE_PROVIDER_AUTHORITY = "com.filemanagerplus.fileprovider"
 
+private enum class Screen { HOME, BROWSER, CATEGORY, SETTINGS, PLAYER }
 private enum class FileAction { DETAILS, RENAME, COPY, MOVE, DELETE }
 
-private data class PendingTransfer(
-    val item: StorageItem,
-    val sourceParent: String,
-    val destUri: Uri?,
-    val move: Boolean
-)
+private data class PendingTransfer(val item: StorageItem, val move: Boolean)
 
 @Composable
 fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
     val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("fm_prefs", Context.MODE_PRIVATE) }
     val repository = remember { StorageRepository(context) }
     val playback = remember { MediaPlaybackController(context) }
     val scope = rememberCoroutineScope()
 
-    var rootPath by remember { mutableStateOf<String?>(null) }
-    var currentPath by remember { mutableStateOf<String?>(null) }
-    var items by remember { mutableStateOf<List<StorageItem>>(emptyList()) }
-    var searchQuery by remember { mutableStateOf("") }
-    var showHidden by remember { mutableStateOf(false) }
-    var sort by remember { mutableStateOf(StorageSort.NAME) }
+    var screen by remember { mutableStateOf(Screen.HOME) }
+    var browserPath by remember { mutableStateOf<String?>(null) }
+    var browserRoot by remember { mutableStateOf<String?>(null) }
+    var category by remember { mutableStateOf<FileCategory?>(null) }
+    var playingItem by remember { mutableStateOf<StorageItem?>(null) }
 
-    var showCreateFolder by remember { mutableStateOf(false) }
-    var newFolderName by remember { mutableStateOf("") }
-    var renameItem by remember { mutableStateOf<StorageItem?>(null) }
-    var renameText by remember { mutableStateOf("") }
-    var deleteItem by remember { mutableStateOf<StorageItem?>(null) }
-    var detailsItem by remember { mutableStateOf<StorageItem?>(null) }
-    var pendingTransfer by remember { mutableStateOf<PendingTransfer?>(null) }
-    var storageUsage by remember { mutableStateOf<StorageUsage?>(null) }
-    var storageError by remember { mutableStateOf<String?>(null) }
-    var showStorageDialog by remember { mutableStateOf(false) }
-    var storageLoading by remember { mutableStateOf(false) }
+    var showHidden by remember { mutableStateOf(prefs.getBoolean("show_hidden", false)) }
+    var sort by remember { mutableStateOf(StorageSort.valueOf(prefs.getString("sort", StorageSort.NAME.name)!!)) }
+    var gridView by remember { mutableStateOf(prefs.getBoolean("grid_view", false)) }
 
-    fun refreshListing() {
-        val path = currentPath ?: return
-        runCatching { repository.list(path, searchQuery, showHidden, sort) }
-            .onSuccess { items = it }
-            .onFailure { /* keep previous items, show error via snackbar-like message not stored */ }
+    fun setShowHidden(v: Boolean) { showHidden = v; prefs.edit().putBoolean("show_hidden", v).apply() }
+    fun setSort(v: StorageSort) { sort = v; prefs.edit().putString("sort", v.name).apply() }
+    fun setGridView(v: Boolean) { gridView = v; prefs.edit().putBoolean("grid_view", v).apply() }
+
+    fun openBrowser(path: String, root: String? = null) {
+        browserPath = path
+        browserRoot = root ?: browserRoot ?: path
+        screen = Screen.BROWSER
     }
 
-    fun selectRoot(root: StorageItem) {
-        rootPath = root.path
-        currentPath = root.path
-    }
+    fun openCategory(cat: FileCategory) { category = cat; screen = Screen.CATEGORY }
+    fun openPlayer(item: StorageItem) { playingItem = item; screen = Screen.PLAYER }
 
-    fun navigateTo(path: String) {
-        currentPath = path
-    }
+    DisposableEffect(Unit) { onDispose { playback.release() } }
 
-    fun goUp() {
-        val current = currentPath ?: return
-        val parent = File(current).parentFile ?: return
-        val parentPath = parent.absolutePath
-        if (rootPath != null && !parentPath.startsWith(rootPath!!)) return
-        currentPath = parentPath
-    }
-
-    fun handlePendingTransfer(destUri: Uri) {
-        val request = pendingTransfer ?: return
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    if (request.item.isDirectory) {
-                        if (destUri.toString().contains(request.item.path)) {
-                            error("A folder cannot be moved into itself or a descendant")
-                        }
-                        if (repository.destinationExistsUri(destUri, context.contentResolver, request.item.name)) {
-                            error("'${request.item.name}' already exists in the destination")
-                        }
-                        repository.copyDirectoryToUri(request.item.path, destUri, context.contentResolver)
-                        if (request.move) repository.delete(request.item.path)
-                    } else {
-                        if (repository.destinationExistsUri(destUri, context.contentResolver, request.item.name)) {
-                            error("'${request.item.name}' already exists in the destination")
-                        }
-                        repository.copyToUri(request.item.path, destUri, context.contentResolver)
-                        if (request.move) repository.delete(request.item.path)
-                    }
-                }
+    val back: () -> Unit = {
+        when (screen) {
+            Screen.HOME -> { /* no-op at root */ }
+            Screen.BROWSER -> {
+                val cur = browserPath; val root = browserRoot
+                if (cur != null && root != null && cur != root) {
+                    browserPath = File(cur).parent ?: root
+                } else screen = Screen.HOME
             }
-            result.onFailure { /* could show snackbar; kept simple */ }
-            pendingTransfer = null
-            refreshListing()
+            Screen.CATEGORY, Screen.SETTINGS, Screen.PLAYER -> screen = Screen.HOME
         }
     }
 
-    fun openNonMediaFile(item: StorageItem) {
-        val file = File(item.path)
-        val uri: Uri = try {
-            FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)
-        } catch (_: Exception) {
-            Uri.fromFile(file)
-        }
-        runCatching {
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, item.mimeType ?: "*/*")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            }
-            context.startActivity(intent)
-        }
-    }
-
-    LaunchedEffect(currentPath, searchQuery, showHidden, sort) {
-        currentPath?.let { path ->
-            runCatching { repository.list(path, searchQuery, showHidden, sort) }
-                .onSuccess { items = it }
-                .onFailure { items = emptyList() }
-        }
-    }
-
-    val destinationPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { destinationUri ->
-        if (destinationUri != null) handlePendingTransfer(destinationUri) else pendingTransfer = null
-    }
-
-    DisposableEffect(playback) { onDispose { playback.release() } }
-
-    fun openItem(item: StorageItem) {
-        if (item.isDirectory) {
-            currentPath = item.path
-        } else if (isPlayable(item)) {
-            runCatching { playback.play(Uri.fromFile(File(item.path))) }
-        } else {
-            openNonMediaFile(item)
-        }
-    }
-
-    fun handleAction(item: StorageItem, action: FileAction) {
-        when (action) {
-            FileAction.DETAILS -> detailsItem = item
-            FileAction.RENAME -> { renameItem = item; renameText = item.name }
-            FileAction.COPY, FileAction.MOVE -> {
-                val parent = currentPath ?: return
-                pendingTransfer = PendingTransfer(item, parent, null, action == FileAction.MOVE)
-                destinationPicker.launch(null)
-            }
-            FileAction.DELETE -> deleteItem = item
-        }
-    }
-
-    fun goBackToRoot() {
-        val root = rootPath ?: return
-        if (currentPath != root) currentPath = root
-    }
-
-    fun calculateStorageUsage() {
-        val uri = rootPath ?: currentPath ?: return
-        storageLoading = true
-        storageUsage = null
-        storageError = null
-        showStorageDialog = true
-        scope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { repository.calculateUsage(uri) } }
-            result.onSuccess { storageUsage = it }.onFailure { storageError = it.message ?: "Could not calculate storage usage" }
-            storageLoading = false
-        }
-    }
-
-    val showRoots = currentPath == null
-
-    if (showRoots) {
-        RootsScreen(
-            onRootSelected = ::selectRoot,
-            onToggleTheme = onToggleTheme,
-            isDark = isDark
-        )
-    } else if (isTv) {
-        TvFileManagerScreen(
-            currentPath = currentPath!!,
-            rootPath = rootPath,
-            items = items,
-            onNavigateTo = ::navigateTo,
-            onGoUp = ::goUp,
-            onOpen = ::openItem,
-            onAction = ::handleAction,
-            onBack = ::goBackToRoot,
-            onToggleTheme = onToggleTheme,
-            isDark = isDark,
-            searchQuery = searchQuery,
-            onSearchChange = { searchQuery = it },
-            showHidden = showHidden,
-            onShowHiddenChange = { showHidden = it },
-            sort = sort,
-            onSortChange = { sort = it },
-            onCreateFolder = { showCreateFolder = true },
-            onStorageInfo = ::calculateStorageUsage
+    if (isTv) {
+        TvApp(
+            screen = screen, onNavigate = { screen = it },
+            repository = repository, playback = playback, scope = scope,
+            browserPath = browserPath, browserRoot = browserRoot,
+            onOpenBrowser = ::openBrowser, onSetBrowserPath = { browserPath = it },
+            category = category, onOpenCategory = ::openCategory,
+            playingItem = playingItem, onPlay = ::openPlayer,
+            showHidden = showHidden, onShowHidden = ::setShowHidden,
+            sort = sort, onSort = ::setSort,
+            onToggleTheme = onToggleTheme, isDark = isDark, onBack = back
         )
     } else {
-        MobileFileManagerScreen(
-            currentPath = currentPath!!,
-            rootPath = rootPath,
-            items = items,
-            onNavigateTo = ::navigateTo,
-            onGoUp = ::goUp,
-            onOpen = ::openItem,
-            onAction = ::handleAction,
-            onBack = ::goBackToRoot,
-            onToggleTheme = onToggleTheme,
-            isDark = isDark,
-            searchQuery = searchQuery,
-            onSearchChange = { searchQuery = it },
-            showHidden = showHidden,
-            onShowHiddenChange = { showHidden = it },
-            sort = sort,
-            onSortChange = { sort = it },
-            onCreateFolder = { showCreateFolder = true },
-            onStorageInfo = ::calculateStorageUsage
-        )
-    }
-
-    if (showCreateFolder && currentPath != null) {
-        AlertDialog(
-            onDismissRequest = { showCreateFolder = false; newFolderName = "" },
-            title = { Text("New folder") },
-            text = {
-                OutlinedTextField(
-                    value = newFolderName, onValueChange = { newFolderName = it },
-                    label = { Text("Folder name") }, singleLine = true
-                )
-            },
-            confirmButton = {
-                TextButton(enabled = newFolderName.isNotBlank(), onClick = {
-                    currentPath?.let { parent ->
-                        runCatching { repository.createFolder(parent, newFolderName) }
-                        refreshListing()
-                    }
-                    showCreateFolder = false; newFolderName = ""
-                }) { Text("Create") }
-            },
-            dismissButton = { TextButton(onClick = { showCreateFolder = false; newFolderName = "" }) { Text("Cancel") } }
-        )
-    }
-
-    renameItem?.let { item ->
-        AlertDialog(
-            onDismissRequest = { renameItem = null },
-            title = { Text("Rename") },
-            text = { OutlinedTextField(value = renameText, onValueChange = { renameText = it }, singleLine = true) },
-            confirmButton = {
-                TextButton(enabled = renameText.isNotBlank(), onClick = {
-                    runCatching { repository.rename(item.path, renameText) }
-                    renameItem = null
-                    refreshListing()
-                }) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { renameItem = null }) { Text("Cancel") } }
-        )
-    }
-
-    deleteItem?.let { item ->
-        AlertDialog(
-            onDismissRequest = { deleteItem = null },
-            title = { Text("Delete ${item.name}?") },
-            text = { Text("This will permanently delete this ${if (item.isDirectory) "folder and its contents" else "file"}.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    runCatching { repository.delete(item.path) }
-                    deleteItem = null
-                    refreshListing()
-                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = { TextButton(onClick = { deleteItem = null }) { Text("Cancel") } }
-        )
-    }
-
-    detailsItem?.let { item ->
-        AlertDialog(
-            onDismissRequest = { detailsItem = null },
-            title = { Text(item.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    DetailLine("Type", if (item.isDirectory) "Folder" else item.mimeType ?: "File")
-                    DetailLine("Size", if (item.isDirectory) "—" else if (item.sizeKnown) formatSize(item.size) else "Unknown")
-                    DetailLine("Modified", item.lastModified.takeIf { it > 0L }?.let { formatFullDate(it) } ?: "Unknown")
-                    DetailLine("Path", item.path)
-                }
-            },
-            confirmButton = { TextButton(onClick = { detailsItem = null }) { Text("Close") } }
-        )
-    }
-
-    if (showStorageDialog) {
-        AlertDialog(
-            onDismissRequest = { showStorageDialog = false },
-            title = { Text("Storage usage") },
-            text = {
-                when {
-                    storageLoading -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                    storageError != null -> Text(storageError!!)
-                    storageUsage != null -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        DetailLine("Total size", formatSize(storageUsage!!.totalBytes))
-                        DetailLine("Files", storageUsage!!.fileCount.toString())
-                        DetailLine("Folders", storageUsage!!.folderCount.toString())
-                        if (storageUsage!!.unknownSizeCount > 0) {
-                            DetailLine("Unknown size", storageUsage!!.unknownSizeCount.toString())
-                        }
-                    }
-                    else -> Text("Unavailable")
-                }
-            },
-            confirmButton = { TextButton(onClick = { showStorageDialog = false }) { Text("Close") } }
+        MobileApp(
+            screen = screen, onNavigate = { screen = it },
+            repository = repository, playback = playback, scope = scope,
+            browserPath = browserPath, browserRoot = browserRoot,
+            onOpenBrowser = ::openBrowser, onSetBrowserPath = { browserPath = it },
+            category = category, onOpenCategory = ::openCategory,
+            playingItem = playingItem, onPlay = ::openPlayer,
+            showHidden = showHidden, onShowHidden = ::setShowHidden,
+            sort = sort, onSort = ::setSort, gridView = gridView, onGridView = ::setGridView,
+            onToggleTheme = onToggleTheme, isDark = isDark, onBack = back
         )
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MobileFileManagerScreen(
-    currentPath: String, rootPath: String?, items: List<StorageItem>,
-    onNavigateTo: (String) -> Unit, onGoUp: () -> Unit, onOpen: (StorageItem) -> Unit,
-    onAction: (StorageItem, FileAction) -> Unit, onBack: () -> Unit,
-    onToggleTheme: () -> Unit, isDark: Boolean,
-    searchQuery: String, onSearchChange: (String) -> Unit,
-    showHidden: Boolean, onShowHiddenChange: (Boolean) -> Unit,
-    sort: StorageSort, onSortChange: (StorageSort) -> Unit,
-    onCreateFolder: () -> Unit, onStorageInfo: () -> Unit
+private fun MobileApp(
+    screen: Screen, onNavigate: (Screen) -> Unit,
+    repository: StorageRepository, playback: MediaPlaybackController, scope: kotlinx.coroutines.CoroutineScope,
+    browserPath: String?, browserRoot: String?,
+    onOpenBrowser: (String, String?) -> Unit, onSetBrowserPath: (String) -> Unit,
+    category: FileCategory?, onOpenCategory: (FileCategory) -> Unit,
+    playingItem: StorageItem?, onPlay: (StorageItem) -> Unit,
+    showHidden: Boolean, onShowHidden: (Boolean) -> Unit,
+    sort: StorageSort, onSort: (StorageSort) -> Unit,
+    gridView: Boolean, onGridView: (Boolean) -> Unit,
+    onToggleTheme: () -> Unit, isDark: Boolean, onBack: () -> Unit
 ) {
-    var showSearch by remember { mutableStateOf(false) }
-    var showMenu by remember { mutableStateOf(false) }
-    val folderName = File(currentPath).name.ifBlank { currentPath }
-
+    val tabs = listOf(Screen.HOME, Screen.BROWSER, Screen.SETTINGS)
     Scaffold(
-        topBar = {
-            Column {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(folderName, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                            Text("${items.size} items", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = { if (currentPath != rootPath) onGoUp() else onBack() }) {
-                            Icon(Icons.Default.ArrowBack, "Back")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { showSearch = !showSearch }) { Icon(Icons.Default.Search, "Search") }
-                        Box {
-                            IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, "More") }
-                            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                                DropdownMenuItem(text = { Text("New folder") }, leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
-                                    onClick = { showMenu = false; onCreateFolder() })
-                                DropdownMenuItem(text = { Text("Storage usage") }, leadingIcon = { Icon(Icons.Default.PieChart, null) },
-                                    onClick = { showMenu = false; onStorageInfo() })
-                                DropdownMenuItem(text = { Text(if (isDark) "Light theme" else "Dark theme") },
-                                    leadingIcon = { Icon(if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode, null) },
-                                    onClick = { showMenu = false; onToggleTheme() })
-                                DropdownMenuItem(text = { Text(if (showHidden) "Hide hidden files" else "Show hidden files") },
-                                    leadingIcon = { Icon(Icons.Default.Visibility, null) },
-                                    onClick = { showMenu = false; onShowHiddenChange(!showHidden) })
-                            }
-                        }
-                    }
-                )
-                if (showSearch) {
-                    OutlinedTextField(
-                        value = searchQuery, onValueChange = onSearchChange,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                        placeholder = { Text("Search in this folder") },
-                        leadingIcon = { Icon(Icons.Default.Search, null) },
-                        trailingIcon = { if (searchQuery.isNotEmpty()) IconButton(onClick = { onSearchChange("") }) { Icon(Icons.Default.Close, null) } },
-                        singleLine = true
-                    )
+        bottomBar = {
+            if (screen != Screen.PLAYER) {
+                NavigationBar {
+                    NavigationBarItem(selected = screen == Screen.HOME, onClick = { onNavigate(Screen.HOME) },
+                        icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
+                    NavigationBarItem(selected = screen == Screen.BROWSER || screen == Screen.CATEGORY,
+                        onClick = { if (browserPath != null) onNavigate(Screen.BROWSER) else onOpenBrowser(repository.internalStoragePath(), repository.internalStoragePath()) },
+                        icon = { Icon(Icons.Default.Folder, null) }, label = { Text("Files") })
+                    NavigationBarItem(selected = screen == Screen.SETTINGS, onClick = { onNavigate(Screen.SETTINGS) },
+                        icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
                 }
-            }
-        },
-        floatingActionButton = {
-            FloatingActionButton(onClick = onCreateFolder, containerColor = MaterialTheme.colorScheme.primaryContainer) {
-                Icon(Icons.Default.CreateNewFolder, "New folder")
             }
         }
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            BreadcrumbBar(currentPath = currentPath, rootPath = rootPath, onNavigateTo = onNavigateTo)
-            SortBar(sort = sort, onSortChange = onSortChange)
-            if (items.isEmpty()) {
-                EmptyFolderState()
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(items, key = { it.path }) { item ->
-                        FileRow(item = item, onClick = { onOpen(item) }, onAction = { onAction(item, it) })
-                        HorizontalDivider(modifier = Modifier.padding(start = 72.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    }
-                    item { Spacer(Modifier.height(80.dp)) }
-                }
+        Box(Modifier.padding(padding)) {
+            when (screen) {
+                Screen.HOME -> HomeScreen(repository, scope, onOpenBrowser = { onOpenBrowser(it, it) },
+                    onOpenPath = { path, root -> onOpenBrowser(path, root) },
+                    onOpenCategory = onOpenCategory, onPlay = onPlay)
+                Screen.BROWSER -> BrowserScreen(repository, scope, playback,
+                    currentPath = browserPath ?: repository.internalStoragePath(),
+                    rootPath = browserRoot, onNavigate = onSetBrowserPath,
+                    onOpenCategory = onOpenCategory, onPlay = onPlay,
+                    showHidden = showHidden, sort = sort, gridView = gridView,
+                    onToggleGrid = { onGridView(!gridView) }, onBack = onBack)
+                Screen.CATEGORY -> CategoryScreen(repository, scope, category ?: FileCategory.IMAGES,
+                    onOpen = { item -> if (item.isDirectory) onOpenBrowser(item.path, null) else onPlay(item) },
+                    onBack = { onNavigate(Screen.HOME) })
+                Screen.SETTINGS -> SettingsScreen(showHidden, onShowHidden, sort, onSort, gridView, onGridView, isDark, onToggleTheme)
+                Screen.PLAYER -> PlayerScreen(playback, playingItem, onBack = { onNavigate(Screen.HOME) })
             }
         }
     }
@@ -438,74 +178,115 @@ private fun MobileFileManagerScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RootsScreen(
-    onRootSelected: (StorageItem) -> Unit,
-    onToggleTheme: () -> Unit,
-    isDark: Boolean
+private fun HomeScreen(
+    repository: StorageRepository, scope: kotlinx.coroutines.CoroutineScope,
+    onOpenBrowser: (String) -> Unit, onOpenPath: (String, String) -> Unit,
+    onOpenCategory: (FileCategory) -> Unit, onPlay: (StorageItem) -> Unit
 ) {
-    val context = LocalContext.current
-    val repository = remember { StorageRepository(context) }
-    val roots = remember { repository.listRoots().ifEmpty { defaultRoots() } }
+    val internal = remember { repository.internalStoragePath() }
+    var stats by remember { mutableStateOf<Pair<Long, Long>?>(null) }
+    var recents by remember { mutableStateOf<List<StorageItem>>(emptyList()) }
+    var loadingRecents by remember { mutableStateOf(true) }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("File Manager +", fontWeight = FontWeight.Bold) },
-                actions = {
-                    IconButton(onClick = onToggleTheme) {
-                        Icon(if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode, "Toggle theme")
+    LaunchedEffect(Unit) {
+        stats = withContext(Dispatchers.IO) { repository.storageStats(internal) }
+        recents = withContext(Dispatchers.IO) { repository.listRecent(internal, 12) }
+        loadingRecents = false
+    }
+
+    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item { Text("File Manager +", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
+
+        item {
+            StorageSummaryCard(stats = stats, onClick = { onOpenBrowser(internal) })
+        }
+
+        item { SectionTitle("Categories") }
+        item {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(FileCategory.values().toList()) { cat ->
+                    CategoryChip(cat) { onOpenCategory(cat) }
+                }
+            }
+        }
+
+        item { SectionTitle("Storage locations") }
+        items(repository.listRoots().ifEmpty {
+            listOf(StorageItem(internal, "Internal Storage", true, 0, null))
+        }, key = { it.path }) { root ->
+            LocationRow(root) { onOpenPath(root.path, root.path) }
+        }
+
+        item { SectionTitle("Recent files") }
+        if (loadingRecents) {
+            item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
+        } else if (recents.isEmpty()) {
+            item { Text("No recent files found", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        } else {
+            items(recents, key = { it.path }) { item ->
+                RecentRow(item, onClick = {
+                    if (isPlayable(item)) onPlay(item) else { /* open via browser context not direct; navigate to parent */ }
+                })
+            }
+        }
+        item { Spacer(Modifier.height(8.dp)) }
+    }
+}
+
+@Composable private fun SectionTitle(text: String) =
+    Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+
+@Composable
+private fun StorageSummaryCard(stats: Pair<Long, Long>?, onClick: () -> Unit) {
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.PhoneAndroid, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Internal Storage", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    if (stats != null) {
+                        val (total, used) = stats
+                        val pct = if (total > 0) used.toFloat() / total else 0f
+                        Spacer(Modifier.height(8.dp))
+                        LinearProgressIndicator(progress = { pct }, modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)))
+                        Spacer(Modifier.height(4.dp))
+                        Text("${formatSize(used)} used of ${formatSize(total)}", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    } else {
+                        Text("Tap to browse", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                 }
-            )
-        }
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            item {
-                Text("Storage locations", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(bottom = 4.dp))
-            }
-            items(roots, key = { it.path }) { root ->
-                StorageCard(root = root, onClick = { onRootSelected(root) })
-            }
-            item { Spacer(Modifier.height(8.dp)) }
-            item {
-                Text("Browse files and folders on your device.", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
 }
 
 @Composable
-private fun StorageCard(root: StorageItem, onClick: () -> Unit) {
-    val icon = when {
-        root.name.contains("Internal", ignoreCase = true) || root.path.contains("emulated") -> Icons.Default.PhoneAndroid
-        root.name.contains("SD", ignoreCase = true) || root.path.contains("sdcard", ignoreCase = true) -> Icons.Default.SdCard
-        else -> Icons.Default.Storage
+private fun CategoryChip(cat: FileCategory, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(76.dp).clickable(onClick = onClick)) {
+        Box(Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)).background(cat.color().copy(alpha = 0.15f)),
+            contentAlignment = Alignment.Center) {
+            Icon(cat.icon(), null, tint = cat.color(), modifier = Modifier.size(28.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(cat.label, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center, maxLines = 1)
     }
-    Card(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(icon, null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(26.dp))
-            }
-            Spacer(Modifier.width(16.dp))
+}
+
+@Composable
+private fun LocationRow(root: StorageItem, onClick: () -> Unit) {
+    val icon = if (root.path.contains("emulated") || root.name.contains("Internal", true)) Icons.Default.PhoneAndroid else Icons.Default.SdStorage
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
+            Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
-                Text(root.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
+                Text(root.name, fontWeight = FontWeight.Medium)
                 Text(root.path, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -515,70 +296,198 @@ private fun StorageCard(root: StorageItem, onClick: () -> Unit) {
 }
 
 @Composable
-private fun BreadcrumbBar(currentPath: String, rootPath: String?, onNavigateTo: (String) -> Unit) {
-    val segments = buildBreadcrumbSegments(currentPath, rootPath)
-    if (segments.isEmpty()) return
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        segments.forEachIndexed { index, seg ->
-            if (index > 0) {
-                Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            val isLast = index == segments.lastIndex
-            Text(
-                text = seg.name,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (isLast) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (isLast) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.clip(RoundedCornerShape(4.dp))
-                    .clickable(enabled = !isLast) { onNavigateTo(seg.path) }
-                    .padding(horizontal = 4.dp, vertical = 4.dp)
-            )
+private fun RecentRow(item: StorageItem, onClick: () -> Unit) {
+    val (icon, tint) = fileIconAndTint(item)
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(tint.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = tint, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+            Text(formatShortDate(item.lastModified), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
-private data class PathSegment(val name: String, val path: String)
+// --- Browser ---
 
-private fun buildBreadcrumbSegments(currentPath: String, rootPath: String?): List<PathSegment> {
-    val root = rootPath ?: return emptyList()
-    val segments = mutableListOf<PathSegment>()
-    var path = currentPath
-    while (path.length >= root.length) {
-        val name = File(path).name.ifBlank { "Storage" }
-        segments.add(0, PathSegment(name, path))
-        if (path == root) break
-        val parent = File(path).parent ?: break
-        path = parent
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BrowserScreen(
+    repository: StorageRepository, scope: kotlinx.coroutines.CoroutineScope, playback: MediaPlaybackController,
+    currentPath: String, rootPath: String?,
+    onNavigate: (String) -> Unit, onOpenCategory: (FileCategory) -> Unit, onPlay: (StorageItem) -> Unit,
+    showHidden: Boolean, sort: StorageSort, gridView: Boolean, onToggleGrid: () -> Unit, onBack: () -> Unit
+) {
+    val context = LocalContext.current
+    var items by remember { mutableStateOf<List<StorageItem>>(emptyList()) }
+    var searchQuery by remember { mutableStateOf("") }
+    var showSearch by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    var showCreateFolder by remember { mutableStateOf(false) }
+    var newFolderName by remember { mutableStateOf("") }
+    var renameItem by remember { mutableStateOf<StorageItem?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var deleteItem by remember { mutableStateOf<StorageItem?>(null) }
+    var detailsItem by remember { mutableStateOf<StorageItem?>(null) }
+    var pendingTransfer by remember { mutableStateOf<PendingTransfer?>(null) }
+    var showUsage by remember { mutableStateOf(false) }
+    var usage by remember { mutableStateOf<StorageUsage?>(null) }
+    var usageLoading by remember { mutableStateOf(false) }
+
+    fun refresh() {
+        scope.launch {
+            loading = true; error = null
+            val result = withContext(Dispatchers.IO) { runCatching { repository.list(currentPath, searchQuery, showHidden, sort) } }
+            result.onSuccess { items = it }.onFailure { error = it.message; items = emptyList() }
+            loading = false
+        }
     }
-    return segments.takeLast(4) // keep it compact
+    LaunchedEffect(currentPath, searchQuery, showHidden, sort) { refresh() }
+
+    fun openItem(item: StorageItem) {
+        if (item.isDirectory) onNavigate(item.path)
+        else if (isPlayable(item)) onPlay(item)
+        else openNonMediaFile(context, item)
+    }
+
+    val destPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        val req = pendingTransfer
+        if (uri != null && req != null) {
+            scope.launch {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        if (req.item.isDirectory) {
+                            if (uri.toString().contains(req.item.path)) error("Cannot copy/move a folder into itself")
+                            if (repository.destinationExistsUri(uri, context.contentResolver, req.item.name)) error("Already exists in destination")
+                            repository.copyDirectoryToUri(req.item.path, uri, context.contentResolver)
+                            if (req.move) repository.delete(req.item.path)
+                        } else {
+                            if (repository.destinationExistsUri(uri, context.contentResolver, req.item.name)) error("Already exists in destination")
+                            repository.copyToUri(req.item.path, uri, context.contentResolver)
+                            if (req.move) repository.delete(req.item.path)
+                        }
+                    }
+                }
+                pendingTransfer = null; refresh()
+            }
+        } else pendingTransfer = null
+    }
+
+    fun handleAction(item: StorageItem, action: FileAction) {
+        when (action) {
+            FileAction.DETAILS -> detailsItem = item
+            FileAction.RENAME -> { renameItem = item; renameText = item.name }
+            FileAction.COPY -> { pendingTransfer = PendingTransfer(item, false); destPicker.launch(null) }
+            FileAction.MOVE -> { pendingTransfer = PendingTransfer(item, true); destPicker.launch(null) }
+            FileAction.DELETE -> deleteItem = item
+        }
+    }
+
+    val folderName = File(currentPath).name.ifBlank { "Storage" }
+    val canGoUp = rootPath != null && currentPath != rootPath
+
+    Scaffold(
+        topBar = {
+            Column {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(folderName, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                            Text(if (loading) "Loading…" else "${items.size} items", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    },
+                    navigationIcon = { IconButton(onClick = { if (canGoUp) onNavigate(File(currentPath).parent ?: rootPath!!) else onBack() }) { Icon(Icons.Default.ArrowBack, "Back") } },
+                    actions = {
+                        IconButton(onClick = { showSearch = !showSearch }) { Icon(Icons.Default.Search, "Search") }
+                        IconButton(onClick = onToggleGrid) { Icon(if (gridView) Icons.Default.ViewList else Icons.Default.GridView, "View") }
+                        Box {
+                            IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, "More") }
+                            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                                DropdownMenuItem(text = { Text("New folder") }, leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) }, onClick = { showMenu = false; showCreateFolder = true })
+                                DropdownMenuItem(text = { Text("Storage usage") }, leadingIcon = { Icon(Icons.Default.PieChart, null) }, onClick = { showMenu = false; showUsage = true; usage = null; usageLoading = true; scope.launch { usage = withContext(Dispatchers.IO) { runCatching { repository.calculateUsage(currentPath) }.getOrNull() }; usageLoading = false } })
+                                DropdownMenuItem(text = { Text("Refresh") }, leadingIcon = { Icon(Icons.Default.Refresh, null) }, onClick = { showMenu = false; refresh() })
+                            }
+                        }
+                    }
+                )
+                if (showSearch) {
+                    OutlinedTextField(value = searchQuery, onValueChange = { searchQuery = it },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        placeholder = { Text("Search") }, leadingIcon = { Icon(Icons.Default.Search, null) },
+                        trailingIcon = { if (searchQuery.isNotEmpty()) IconButton(onClick = { searchQuery = "" }) { Icon(Icons.Default.Close, null) } },
+                        singleLine = true)
+                }
+            }
+        },
+        floatingActionButton = { FloatingActionButton(onClick = { showCreateFolder = true }) { Icon(Icons.Default.CreateNewFolder, "New folder") } }
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            BreadcrumbBar(currentPath, rootPath, onNavigate)
+            SortBarRow(sort)
+            when {
+                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                error != null -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) { Text(error!!, color = MaterialTheme.colorScheme.error) }
+                items.isEmpty() -> EmptyState(if (searchQuery.isNotEmpty()) "No results" else "This folder is empty")
+                gridView -> LazyVerticalGrid(columns = GridCells.Adaptive(110.dp), contentPadding = PaddingValues(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(items, key = { it.path }) { item -> FileGridItem(item, { openItem(item) }, { handleAction(item, it) }) }
+                }
+                else -> LazyColumn { items(items, key = { it.path }) { item ->
+                    FileListRow(item, { openItem(item) }, { handleAction(item, it) })
+                    HorizontalDivider(Modifier.padding(start = 72.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                }; item { Spacer(Modifier.height(80.dp)) } }
+            }
+        }
+    }
+
+    if (showCreateFolder) NameDialog("New folder", newFolderName, { newFolderName = it }, "Create", { showCreateFolder = false; newFolderName = "" }) {
+        scope.launch { withContext(Dispatchers.IO) { runCatching { repository.createFolder(currentPath, newFolderName) } }; showCreateFolder = false; newFolderName = ""; refresh() }
+    }
+    renameItem?.let { item -> NameDialog("Rename", renameText, { renameText = it }, "Save", { renameItem = null }) {
+        scope.launch { withContext(Dispatchers.IO) { runCatching { repository.rename(item.path, renameText) } }; renameItem = null; refresh() }
+    } }
+    deleteItem?.let { item -> AlertDialog(onDismissRequest = { deleteItem = null }, title = { Text("Delete ${item.name}?") },
+        text = { Text("This will permanently delete this ${if (item.isDirectory) "folder" else "file"}.") },
+        confirmButton = { TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { runCatching { repository.delete(item.path) } }; deleteItem = null; refresh() } }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = { deleteItem = null }) { Text("Cancel") } }) }
+    detailsItem?.let { item -> DetailsDialog(item) { detailsItem = null } }
+    if (showUsage) UsageDialog(usage, usageLoading) { showUsage = false }
 }
 
+// --- Category, Settings, Player, TV ---
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SortBar(sort: StorageSort, onSortChange: (StorageSort) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Box {
-            TextButton(onClick = { expanded = true }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-                Icon(Icons.Default.SwapVert, null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Sort: ${sort.label()}", style = MaterialTheme.typography.labelMedium)
-            }
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                StorageSort.values().forEach { option ->
-                    DropdownMenuItem(
-                        text = { Text(option.label()) },
-                        leadingIcon = { if (option == sort) Icon(Icons.Default.Check, null) },
-                        onClick = { onSortChange(option); expanded = false }
+private fun CategoryScreen(repository: StorageRepository, scope: kotlinx.coroutines.CoroutineScope, cat: FileCategory,
+    onOpen: (StorageItem) -> Unit, onBack: () -> Unit) {
+    var items by remember { mutableStateOf<List<StorageItem>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    val root = remember { repository.internalStoragePath() }
+    LaunchedEffect(cat) {
+        loading = true
+        items = withContext(Dispatchers.IO) { repository.listByCategory(root, cat) }
+        loading = false
+    }
+    Scaffold(topBar = {
+        TopAppBar(title = { Text(cat.label) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } })
+    }) { padding ->
+        when {
+            loading -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            items.isEmpty() -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { EmptyState("No ${cat.label.lowercase()} found") }
+            else -> LazyColumn(Modifier.padding(padding)) {
+                items(items, key = { it.path }) { item ->
+                    val (icon, tint) = fileIconAndTint(item)
+                    ListItem(
+                        headlineContent = { Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        supportingContent = { Text("${formatSize(item.size)} • ${formatShortDate(item.lastModified)}", style = MaterialTheme.typography.bodySmall) },
+                        leadingContent = { Box(Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)).background(tint.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) { Icon(icon, null, tint = tint) } },
+                        modifier = Modifier.clickable { onOpen(item) }
                     )
                 }
             }
@@ -586,178 +495,235 @@ private fun SortBar(sort: StorageSort, onSortChange: (StorageSort) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun EmptyFolderState() {
-    Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(Icons.Outlined.FolderOpen, null, modifier = Modifier.size(72.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-            Spacer(Modifier.height(16.dp))
-            Text("This folder is empty", style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun SettingsScreen(showHidden: Boolean, onShowHidden: (Boolean) -> Unit, sort: StorageSort, onSort: (StorageSort) -> Unit,
+    gridView: Boolean, onGridView: (Boolean) -> Unit, isDark: Boolean, onToggleTheme: () -> Unit) {
+    Scaffold(topBar = { TopAppBar(title = { Text("Settings") }) }) { padding ->
+        LazyColumn(Modifier.padding(padding).fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { Text("Appearance", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
+            item { SettingsSwitch("Dark theme", "Use dark color scheme", isDark, onToggleTheme) }
+            item { HorizontalDivider() }
+            item { Text("File browsing", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
+            item { SettingsSwitch("Show hidden files", "Display files starting with .", showHidden, { onShowHidden(it) }) }
+            item { SettingsSwitch("Grid view", "Show files in a grid", gridView, { onGridView(it) }) }
+            item {
+                var expanded by remember { mutableStateOf(false) }
+                ListItem(headlineContent = { Text("Default sort") }, supportingContent = { Text(sort.label()) },
+                    modifier = Modifier.clickable { expanded = true },
+                    trailingContent = { Box { TextButton(onClick = { expanded = true }) { Text(sort.label()) }
+                        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                            StorageSort.values().forEach { s -> DropdownMenuItem(text = { Text(s.label()) }, onClick = { onSort(s); expanded = false }) }
+                        } } })
+            }
+            item { HorizontalDivider() }
+            item { Text("About", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
+            item { ListItem(headlineContent = { Text("File Manager +") }, supportingContent = { Text("Version 0.1.0 • Open source (MIT)") }) }
+            item { ListItem(headlineContent = { Text("Permissions") }, supportingContent = { Text("Uses MANAGE_EXTERNAL_STORAGE for full file access. No ads, no tracking.") }) }
         }
     }
 }
 
+@Composable private fun SettingsSwitch(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+    ListItem(headlineContent = { Text(title) }, supportingContent = { Text(subtitle) },
+        trailingContent = { Switch(checked = checked, onCheckedChange = onChecked) })
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FileRow(item: StorageItem, onClick: () -> Unit, onAction: (FileAction) -> Unit) {
-    var menuExpanded by remember { mutableStateOf(false) }
-    val (icon, tint) = fileIconAndTint(item)
-    val subtitle = buildString {
-        if (item.isDirectory) {
-            append("Folder")
-        } else {
-            append(if (item.sizeKnown) formatSize(item.size) else "—")
-            if (item.lastModified > 0) append("  •  ${formatShortDate(item.lastModified)}")
+private fun PlayerScreen(playback: MediaPlaybackController, item: StorageItem?, onBack: () -> Unit) {
+    var isPlaying by remember { mutableStateOf(true) }
+    LaunchedEffect(item) { item?.let { runCatching { playback.play(Uri.fromFile(File(it.path))) } } }
+    Scaffold(topBar = { TopAppBar(title = { Text("Now playing") }, navigationIcon = { IconButton(onClick = { playback.player.pause(); onBack() }) { Icon(Icons.Default.ArrowBack, "Back") } }) }) { padding ->
+        if (item == null) { Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { Text("No media selected") }; return@Scaffold }
+        val (icon, tint) = fileIconAndTint(item)
+        Column(Modifier.fillMaxSize().padding(padding).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Box(Modifier.size(160.dp).clip(RoundedCornerShape(24.dp)).background(tint.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = tint, modifier = Modifier.size(80.dp))
+            }
+            Spacer(Modifier.height(24.dp))
+            Text(item.name, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(if (isPlayable(item) && item.mimeType?.startsWith("video") == true) "Video" else "Audio", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(32.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
+                FilledIconButton(onClick = { playback.player.seekBack() }) { Icon(Icons.Default.Replay10, "Back 10s") }
+                FilledIconButton(onClick = { if (isPlaying) playback.player.pause() else playback.player.play(); isPlaying = !isPlaying }, modifier = Modifier.size(64.dp)) {
+                    Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, "Play/Pause", modifier = Modifier.size(32.dp))
+                }
+                FilledIconButton(onClick = { playback.player.seekForward() }) { Icon(Icons.Default.Forward10, "Forward 10s") }
+            }
+            Spacer(Modifier.height(16.dp))
+            Text("Basic playback • seek/queue/background service pending", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
         }
     }
+}
 
-    ListItem(
-        headlineContent = {
-            Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-        },
-        supportingContent = {
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-        },
-        leadingContent = {
-            Box(
-                modifier = Modifier.size(42.dp).clip(RoundedCornerShape(10.dp))
-                    .background(tint.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(icon, null, tint = tint, modifier = Modifier.size(24.dp))
+@Composable
+private fun TvApp(
+    screen: Screen, onNavigate: (Screen) -> Unit,
+    repository: StorageRepository, playback: MediaPlaybackController, scope: kotlinx.coroutines.CoroutineScope,
+    browserPath: String?, browserRoot: String?,
+    onOpenBrowser: (String, String?) -> Unit, onSetBrowserPath: (String) -> Unit,
+    category: FileCategory?, onOpenCategory: (FileCategory) -> Unit,
+    playingItem: StorageItem?, onPlay: (StorageItem) -> Unit,
+    showHidden: Boolean, onShowHidden: (Boolean) -> Unit,
+    sort: StorageSort, onSort: (StorageSort) -> Unit,
+    onToggleTheme: () -> Unit, isDark: Boolean, onBack: () -> Unit
+) {
+    Row(Modifier.fillMaxSize()) {
+        // TV sidebar
+        NavigationRail(modifier = Modifier.width(100.dp)) {
+            NavigationRailItem(selected = screen == Screen.HOME, onClick = { onNavigate(Screen.HOME) }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
+            NavigationRailItem(selected = screen == Screen.BROWSER, onClick = { if (browserPath != null) onNavigate(Screen.BROWSER) else onOpenBrowser(repository.internalStoragePath(), repository.internalStoragePath()) }, icon = { Icon(Icons.Default.Folder, null) }, label = { Text("Files") })
+            FileCategory.values().forEach { cat ->
+                NavigationRailItem(selected = screen == Screen.CATEGORY && category == cat, onClick = { onOpenCategory(cat) }, icon = { Icon(cat.icon(), null) }, label = { Text(cat.label, maxLines = 1) })
             }
-        },
+            NavigationRailItem(selected = screen == Screen.SETTINGS, onClick = { onNavigate(Screen.SETTINGS) }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
+        }
+        Box(Modifier.weight(1f).fillMaxHeight()) {
+            when (screen) {
+                Screen.HOME -> HomeScreen(repository, scope, { onOpenBrowser(it, it) }, { p, r -> onOpenBrowser(p, r) }, onOpenCategory, onPlay)
+                Screen.BROWSER -> BrowserScreen(repository, scope, playback, browserPath ?: repository.internalStoragePath(), browserRoot, onSetBrowserPath, onOpenCategory, onPlay, showHidden, sort, false, {}, onBack)
+                Screen.CATEGORY -> CategoryScreen(repository, scope, category ?: FileCategory.IMAGES, { if (it.isDirectory) onOpenBrowser(it.path, null) else onPlay(it) }, { onNavigate(Screen.HOME) })
+                Screen.SETTINGS -> SettingsScreen(showHidden, onShowHidden, sort, onSort, false, {}, isDark, onToggleTheme)
+                Screen.PLAYER -> PlayerScreen(playback, playingItem) { onNavigate(Screen.HOME) }
+            }
+        }
+    }
+}
+
+// --- Shared UI components ---
+
+@Composable
+private fun BreadcrumbBar(currentPath: String, rootPath: String?, onNavigate: (String) -> Unit) {
+    val segments = buildList {
+        val root = rootPath ?: return@buildList
+        var p = currentPath
+        while (p.length >= root.length) {
+            add(p to File(p).name.ifBlank { "Storage" })
+            if (p == root) break
+            p = File(p).parent ?: break
+        }
+        reverse()
+    }.takeLast(4)
+    if (segments.size <= 1) return
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        segments.forEachIndexed { i, (path, name) ->
+            if (i > 0) Icon(Icons.Default.ChevronRight, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            val last = i == segments.lastIndex
+            Text(name, style = MaterialTheme.typography.labelMedium, fontWeight = if (last) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (last) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(enabled = !last) { onNavigate(path) }.padding(horizontal = 4.dp, vertical = 4.dp))
+        }
+    }
+}
+
+@Composable
+private fun SortBarRow(sort: StorageSort) {
+    // sort is controlled by parent in this simplified UI; shown as label
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Default.SwapVert, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(4.dp))
+        Text("Sorted by ${sort.label()}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun EmptyState(msg: String) {
+    Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(Icons.Outlined.FolderOpen, null, Modifier.size(72.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+            Spacer(Modifier.height(16.dp))
+            Text(msg, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun FileListRow(item: StorageItem, onClick: () -> Unit, onAction: (FileAction) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    val (icon, tint) = fileIconAndTint(item)
+    val sub = if (item.isDirectory) "Folder" else buildString { append(if (item.sizeKnown) formatSize(item.size) else "—"); if (item.lastModified > 0) append("  •  ${formatShortDate(item.lastModified)}") }
+    ListItem(
+        headlineContent = { Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium) },
+        supportingContent = { Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+        leadingContent = { Box(Modifier.size(42.dp).clip(RoundedCornerShape(10.dp)).background(tint.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) { Icon(icon, null, tint = tint, modifier = Modifier.size(24.dp)) } },
         trailingContent = {
-            Box {
-                IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Default.MoreVert, "Options") }
-                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                    FileAction.values().forEach { action ->
-                        val (label, actionIcon) = action.labelAndIcon()
-                        DropdownMenuItem(
-                            text = { Text(label, color = if (action == FileAction.DELETE) MaterialTheme.colorScheme.error else Color.Unspecified) },
-                            leadingIcon = { Icon(actionIcon, null, tint = if (action == FileAction.DELETE) MaterialTheme.colorScheme.error else LocalContentColor.current) },
-                            onClick = { menuExpanded = false; onAction(action) }
-                        )
+            Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Options") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    FileAction.values().forEach { a ->
+                        val (lbl, ic) = actionUi(a)
+                        DropdownMenuItem(text = { Text(lbl, color = if (a == FileAction.DELETE) MaterialTheme.colorScheme.error else Color.Unspecified) },
+                            leadingIcon = { Icon(ic, null, tint = if (a == FileAction.DELETE) MaterialTheme.colorScheme.error else LocalContentColor.current) },
+                            onClick = { menu = false; onAction(a) })
                     }
                 }
             }
         },
-        modifier = Modifier.clickable(onClick = onClick),
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+        modifier = Modifier.clickable(onClick = onClick)
     )
 }
 
-// --- TV layout (kept functional, improved readability) ---
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TvFileManagerScreen(
-    currentPath: String, rootPath: String?, items: List<StorageItem>,
-    onNavigateTo: (String) -> Unit, onGoUp: () -> Unit, onOpen: (StorageItem) -> Unit,
-    onAction: (StorageItem, FileAction) -> Unit, onBack: () -> Unit,
-    onToggleTheme: () -> Unit, isDark: Boolean,
-    searchQuery: String, onSearchChange: (String) -> Unit,
-    showHidden: Boolean, onShowHiddenChange: (Boolean) -> Unit,
-    sort: StorageSort, onSortChange: (StorageSort) -> Unit,
-    onCreateFolder: () -> Unit, onStorageInfo: () -> Unit
-) {
-    val folderName = File(currentPath).name.ifBlank { currentPath }
-    Row(Modifier.fillMaxSize().padding(32.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-        Column(Modifier.width(260.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("File Manager +", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(value = searchQuery, onValueChange = onSearchChange, label = { Text("Search") },
-                leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Button(onClick = onGoUp, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.ArrowUpward, null); Spacer(Modifier.width(8.dp)); Text("Up") }
-            OutlinedButton(onClick = onCreateFolder, modifier = Modifier.fillMaxWidth()) { Text("New folder") }
-            OutlinedButton(onClick = onStorageInfo, modifier = Modifier.fillMaxWidth()) { Text("Storage usage") }
-            OutlinedButton(onClick = { onShowHiddenChange(!showHidden) }, modifier = Modifier.fillMaxWidth()) { Text(if (showHidden) "Hide hidden" else "Show hidden") }
-            OutlinedButton(onClick = onToggleTheme, modifier = Modifier.fillMaxWidth()) { Text(if (isDark) "Light theme" else "Dark theme") }
-            OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Storage locations") }
-        }
-        Column(Modifier.weight(1f)) {
-            Text(folderName, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-            BreadcrumbBar(currentPath = currentPath, rootPath = rootPath, onNavigateTo = onNavigateTo)
-            SortBar(sort = sort, onSortChange = onSortChange)
-            Spacer(Modifier.height(8.dp))
-            if (items.isEmpty()) {
-                EmptyFolderState()
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(items, key = { it.path }) { item -> TvFileRow(item, onClick = { onOpen(item) }, onAction = { onAction(item, it) }) }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TvFileRow(item: StorageItem, onClick: () -> Unit, onAction: (FileAction) -> Unit) {
-    var menuExpanded by remember { mutableStateOf(false) }
+private fun FileGridItem(item: StorageItem, onClick: () -> Unit, onAction: (FileAction) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
     val (icon, tint) = fileIconAndTint(item)
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(tint.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center) {
-                Icon(icon, null, tint = tint, modifier = Modifier.size(24.dp))
-            }
-            Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f)) {
-                Text(item.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(if (item.isDirectory) "Folder" else if (item.sizeKnown) formatSize(item.size) else "—",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Box {
-                IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Default.MoreVert, "Options") }
-                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                    FileAction.values().forEach { action ->
-                        val (label, actionIcon) = action.labelAndIcon()
-                        DropdownMenuItem(text = { Text(label) }, leadingIcon = { Icon(actionIcon, null) },
-                            onClick = { menuExpanded = false; onAction(action) })
-                    }
+    Card(onClick = onClick, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+        Column(Modifier.padding(12.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.align(Alignment.End)) {
+                IconButton(onClick = { menu = true }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    FileAction.values().forEach { a -> val (lbl, ic) = actionUi(a); DropdownMenuItem(text = { Text(lbl) }, leadingIcon = { Icon(ic, null) }, onClick = { menu = false; onAction(a) }) }
                 }
             }
+            Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(tint.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = tint, modifier = Modifier.size(28.dp))
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(item.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
         }
     }
 }
 
-// --- Helpers ---
+@Composable
+private fun NameDialog(title: String, value: String, onValue: (String) -> Unit, confirm: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(title) },
+        text = { OutlinedTextField(value = value, onValueChange = onValue, singleLine = true, label = { Text("Name") }) },
+        confirmButton = { TextButton(enabled = value.isNotBlank(), onClick = onConfirm) { Text(confirm) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+}
 
 @Composable
-private fun DetailLine(label: String, value: String) {
-    Column {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-        Text(value, style = MaterialTheme.typography.bodyMedium)
-    }
+private fun DetailsDialog(item: StorageItem, onDismiss: () -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(item.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            DetailRow("Type", if (item.isDirectory) "Folder" else item.mimeType ?: "File")
+            DetailRow("Size", if (item.isDirectory) "—" else if (item.sizeKnown) formatSize(item.size) else "Unknown")
+            DetailRow("Modified", formatFullDate(item.lastModified))
+            DetailRow("Path", item.path)
+        } }, confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } })
 }
 
-private fun fileIconAndTint(item: StorageItem): Pair<ImageVector, Color> {
-    if (item.isDirectory) return Icons.Default.Folder to Color(0xFFF9A825)
-    val name = item.name.lowercase()
-    val mime = item.mimeType.orEmpty().lowercase()
-    return when {
-        mime.startsWith("image/") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png") ||
-            name.endsWith(".gif") || name.endsWith(".webp") || name.endsWith(".bmp") -> Icons.Default.Image to Color(0xFF43A047)
-        mime.startsWith("video/") || name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".webm") ||
-            name.endsWith(".avi") || name.endsWith(".mov") -> Icons.Default.Movie to Color(0xFFE53935)
-        mime.startsWith("audio/") || name.endsWith(".mp3") || name.endsWith(".m4a") || name.endsWith(".wav") ||
-            name.endsWith(".flac") || name.endsWith(".ogg") || name.endsWith(".aac") -> Icons.Default.AudioFile to Color(0xFF8E24AA)
-        name.endsWith(".pdf") -> Icons.Default.PictureAsPdf to Color(0xFFE53935)
-        name.endsWith(".zip") || name.endsWith(".rar") || name.endsWith(".7z") || name.endsWith(".tar") ||
-            name.endsWith(".gz") -> Icons.Default.FolderZip to Color(0xFF6D4C41)
-        name.endsWith(".apk") -> Icons.Default.Android to Color(0xFF43A047)
-        name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".log") || name.endsWith(".json") ||
-            name.endsWith(".xml") || name.endsWith(".csv") -> Icons.Default.Description to Color(0xFF1E88E5)
-        mime.startsWith("text/") -> Icons.Default.Description to Color(0xFF1E88E5)
-        else -> Icons.Default.InsertDriveFile to Color(0xFF546E7A)
-    }
+@Composable
+private fun UsageDialog(usage: StorageUsage?, loading: Boolean, onDismiss: () -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Storage usage") },
+        text = {
+            if (loading) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            else if (usage == null) Text("Could not calculate")
+            else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                DetailRow("Total size", formatSize(usage.totalBytes))
+                DetailRow("Files", usage.fileCount.toString())
+                DetailRow("Folders", usage.folderCount.toString())
+            }
+        }, confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } })
 }
 
-private fun FileAction.labelAndIcon(): Pair<String, ImageVector> = when (this) {
+@Composable private fun DetailRow(label: String, value: String) {
+    Column { Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary); Text(value, style = MaterialTheme.typography.bodyMedium) }
+}
+
+private fun actionUi(a: FileAction): Pair<String, ImageVector> = when (a) {
     FileAction.DETAILS -> "Details" to Icons.Outlined.Info
     FileAction.RENAME -> "Rename" to Icons.Outlined.Edit
     FileAction.COPY -> "Copy to…" to Icons.Outlined.FileCopy
@@ -765,36 +731,13 @@ private fun FileAction.labelAndIcon(): Pair<String, ImageVector> = when (this) {
     FileAction.DELETE -> "Delete" to Icons.Outlined.Delete
 }
 
-private fun StorageSort.label(): String = when (this) {
-    StorageSort.NAME -> "Name"
-    StorageSort.DATE -> "Date"
-    StorageSort.SIZE -> "Size"
-    StorageSort.TYPE -> "Type"
-}
-
-private fun isPlayable(item: StorageItem): Boolean {
-    val mime = item.mimeType.orEmpty()
-    return mime.startsWith("audio/") || mime.startsWith("video/") ||
-        item.name.substringAfterLast('.', "").lowercase() in
-        setOf("mp3", "m4a", "aac", "flac", "wav", "ogg", "mp4", "mkv", "webm", "avi")
-}
-
-private fun formatSize(bytes: Long): String {
-    if (bytes < 1024) return "$bytes B"
-    val units = listOf("KB", "MB", "GB", "TB")
-    var value = bytes.toDouble()
-    var index = -1
-    do { value /= 1024; index++ } while (value >= 1024 && index < units.lastIndex)
-    return "${DecimalFormat("#,##0.#").format(value)} ${units[index]}"
-}
-
-private fun formatShortDate(millis: Long): String =
-    SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(millis))
-
-private fun formatFullDate(millis: Long): String =
-    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(millis))
-
-private fun defaultRoots(): List<StorageItem> {
-    val path = android.os.Environment.getExternalStorageDirectory().absolutePath
-    return listOf(StorageItem(path = path, name = "Internal Storage", isDirectory = true, size = 0, mimeType = null))
+private fun openNonMediaFile(context: Context, item: StorageItem) {
+    val file = File(item.path)
+    val uri: Uri = try { FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file) } catch (_: Exception) { Uri.fromFile(file) }
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, item.mimeType ?: "*/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        })
+    }
 }
