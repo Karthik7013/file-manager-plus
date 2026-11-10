@@ -33,6 +33,14 @@ data class StorageUsage(
 
 enum class StorageSort { NAME, DATE, SIZE, TYPE }
 
+enum class FileCategory(val label: String, val extensions: Set<String>) {
+    IMAGES("Images", setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif")),
+    VIDEOS("Videos", setOf("mp4", "mkv", "webm", "avi", "mov", "3gp")),
+    AUDIO("Audio", setOf("mp3", "m4a", "aac", "flac", "wav", "ogg", "opus")),
+    DOCUMENTS("Documents", setOf("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "csv")),
+    APKS("APKs", setOf("apk"))
+}
+
 class StorageRepository(private val context: Context?) {
 
     /** Returns available storage roots (e.g. internal storage, SD card). */
@@ -305,8 +313,152 @@ class StorageRepository(private val context: Context?) {
     }
 
     fun displayName(path: String): String {
-        return File(path).name.ifBlank { "Selected folder" }
+        return File(path).name.ifBlank { "Storage" }
     }
+
+    fun storageStats(path: String): Pair<Long, Long>? {
+        return try {
+            val stat = android.os.StatFs(path)
+            val total = stat.blockCountLong * stat.blockSizeLong
+            val free = stat.availableBlocksLong * stat.blockSizeLong
+            total to (total - free)
+        } catch (_: Exception) { null }
+    }
+
+    fun internalStoragePath(): String = Environment.getExternalStorageDirectory().absolutePath
+
+    fun listByCategory(rootPath: String, category: FileCategory, limit: Int = 200): List<StorageItem> {
+        val exts = category.extensions
+        val result = mutableListOf<StorageItem>()
+        val pending = ArrayDeque<File>()
+        val visited = mutableSetOf<String>()
+        pending.add(File(rootPath))
+        while (pending.isNotEmpty() && result.size < limit) {
+            val dir = pending.removeLast()
+            val key = runCatching { dir.canonicalPath }.getOrNull() ?: continue
+            if (!visited.add(key)) continue
+            val children = dir.listFiles() ?: continue
+            for (child in children) {
+                if (result.size >= limit) break
+                if (child.isDirectory) {
+                    if (!child.name.startsWith(".")) pending.add(child)
+                } else {
+                    val ext = child.extension.lowercase()
+                    if (ext in exts) {
+                        result += StorageItem(
+                            path = child.absolutePath, name = child.name, isDirectory = false,
+                            size = child.length(), mimeType = mimeTypeFor(child),
+                            lastModified = child.lastModified(), sizeKnown = true
+                        )
+                    }
+                }
+            }
+        }
+        return result.sortedByDescending { it.lastModified }
+    }
+
+    fun listRecent(rootPath: String, limit: Int = 30): List<StorageItem> {
+        val all = mutableListOf<StorageItem>()
+        val pending = ArrayDeque<File>()
+        val visited = mutableSetOf<String>()
+        pending.add(File(rootPath))
+        var scanned = 0
+        while (pending.isNotEmpty() && scanned < 3000) {
+            val dir = pending.removeLast()
+            val key = runCatching { dir.canonicalPath }.getOrNull() ?: continue
+            if (!visited.add(key)) continue
+            val children = dir.listFiles() ?: continue
+            for (child in children) {
+                scanned++
+                if (child.isDirectory) {
+                    if (!child.name.startsWith(".") && child.name != "Android") pending.add(child)
+                } else {
+                    all += StorageItem(
+                        path = child.absolutePath, name = child.name, isDirectory = false,
+                        size = child.length(), mimeType = mimeTypeFor(child),
+                        lastModified = child.lastModified(), sizeKnown = true
+                    )
+                }
+            }
+        }
+        return all.sortedByDescending { it.lastModified }.take(limit)
+    }
+
+    fun storageStats(path: String): Pair<Long, Long>? {
+        return try {
+            val stat = android.os.StatFs(path)
+            val total = stat.blockCountLong * stat.blockSizeLong
+            val free = stat.availableBlocksLong * stat.blockSizeLong
+            total to (total - free)
+        } catch (_: Exception) { null }
+    }
+
+    fun internalStoragePath(): String = Environment.getExternalStorageDirectory().absolutePath
+
+    fun listByCategory(rootPath: String, category: FileCategory, limit: Int = 200): List<StorageItem> {
+        val exts = category.extensions
+        val result = mutableListOf<StorageItem>()
+        val pending = ArrayDeque<File>()
+        val visited = mutableSetOf<String>()
+        pending.add(File(rootPath))
+        while (pending.isNotEmpty() && result.size < limit) {
+            val dir = pending.removeLast()
+            val key = runCatching { dir.canonicalPath }.getOrNull() ?: continue
+            if (!visited.add(key)) continue
+            val children = dir.listFiles() ?: continue
+            for (child in children) {
+                if (result.size >= limit) break
+                if (child.isDirectory) {
+                    if (!child.name.startsWith(".")) pending.add(child)
+                } else {
+                    val ext = child.extension.lowercase()
+                    if (ext in exts) {
+                        result += StorageItem(
+                            path = child.absolutePath, name = child.name, isDirectory = false,
+                            size = child.length(), mimeType = mimeTypeFor(child),
+                            lastModified = child.lastModified(), sizeKnown = true
+                        )
+                    }
+                }
+            }
+        }
+        return result.sortedByDescending { it.lastModified }
+    }
+
+    fun listRecent(rootPath: String, limit: Int = 30): List<StorageItem> {
+        val all = mutableListOf<StorageItem>()
+        val pending = ArrayDeque<File>()
+        val visited = mutableSetOf<String>()
+        pending.add(File(rootPath))
+        var scanned = 0
+        while (pending.isNotEmpty() && scanned < 3000) {
+            val dir = pending.removeLast()
+            val key = runCatching { dir.canonicalPath }.getOrNull() ?: continue
+            if (!visited.add(key)) continue
+            val children = dir.listFiles() ?: continue
+            for (child in children) {
+                scanned++
+                if (child.isDirectory) {
+                    if (!child.name.startsWith(".") && child.name != "Android") pending.add(child)
+                } else {
+                    all += StorageItem(
+                        path = child.absolutePath, name = child.name, isDirectory = false,
+                        size = child.length(), mimeType = mimeTypeFor(child),
+                        lastModified = child.lastModified(), sizeKnown = true
+                    )
+                }
+            }
+        }
+        return all.sortedByDescending { it.lastModified }.take(limit)
+    }
+
+enum class FileCategory(val label: String, val extensions: Set<String>) {
+    IMAGES("Images", setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif")),
+    VIDEOS("Videos", setOf("mp4", "mkv", "webm", "avi", "mov", "3gp")),
+    AUDIO("Audio", setOf("mp3", "m4a", "aac", "flac", "wav", "ogg", "opus")),
+    DOCUMENTS("Documents", setOf("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "csv")),
+    APKS("APKs", setOf("apk"))
+}
 
     private fun mimeTypeFor(file: File): String? {
         if (file.isDirectory) return null
