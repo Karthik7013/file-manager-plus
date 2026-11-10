@@ -401,14 +401,8 @@ class StorageRepository(private val context: Context?) {
         }
     }
 
-    private fun validateDisplayName(name: String): String {
-        val cleaned = name.trim()
-        require(cleaned.isNotEmpty() && cleaned != "." && cleaned != ".." &&
-            !cleaned.contains('/') && !cleaned.contains('\\')) {
-            "Enter a valid file or folder name"
-        }
-        return cleaned
-    }
+    private fun validateDisplayName(name: String): String =
+        com.filemanagerplus.data.validateDisplayName(name)
 
     companion object {
         /** Whether the app has been granted MANAGE_EXTERNAL_STORAGE (API 29+). */

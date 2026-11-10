@@ -1,14 +1,9 @@
 package com.filemanagerplus.ui
 
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
-import android.os.Environment
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -18,7 +13,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -34,7 +28,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import com.filemanagerplus.data.FileCategory
 import com.filemanagerplus.data.StorageItem
 import com.filemanagerplus.data.StorageRepository
@@ -46,12 +39,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-private const val FILE_PROVIDER_AUTHORITY = "com.filemanagerplus.fileprovider"
-
-private enum class Screen { HOME, BROWSER, CATEGORY, SETTINGS, PLAYER }
-private enum class FileAction { DETAILS, RENAME, COPY, MOVE, DELETE }
-
-private data class PendingTransfer(val item: StorageItem, val move: Boolean)
 
 @Composable
 fun FileManagerRoot(isTv: Boolean, onToggleTheme: () -> Unit, isDark: Boolean) {
@@ -310,155 +297,6 @@ private fun RecentRow(item: StorageItem, onClick: () -> Unit) {
     }
 }
 
-// --- Browser ---
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun BrowserScreen(
-    repository: StorageRepository, scope: kotlinx.coroutines.CoroutineScope, playback: MediaPlaybackController,
-    currentPath: String, rootPath: String?,
-    onNavigate: (String) -> Unit, onOpenCategory: (FileCategory) -> Unit, onPlay: (StorageItem) -> Unit,
-    showHidden: Boolean, sort: StorageSort, gridView: Boolean, onToggleGrid: () -> Unit, onBack: () -> Unit
-) {
-    val context = LocalContext.current
-    var items by remember { mutableStateOf<List<StorageItem>>(emptyList()) }
-    var searchQuery by remember { mutableStateOf("") }
-    var showSearch by remember { mutableStateOf(false) }
-    var showMenu by remember { mutableStateOf(false) }
-    var loading by remember { mutableStateOf(true) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    var showCreateFolder by remember { mutableStateOf(false) }
-    var newFolderName by remember { mutableStateOf("") }
-    var renameItem by remember { mutableStateOf<StorageItem?>(null) }
-    var renameText by remember { mutableStateOf("") }
-    var deleteItem by remember { mutableStateOf<StorageItem?>(null) }
-    var detailsItem by remember { mutableStateOf<StorageItem?>(null) }
-    var pendingTransfer by remember { mutableStateOf<PendingTransfer?>(null) }
-    var showUsage by remember { mutableStateOf(false) }
-    var usage by remember { mutableStateOf<StorageUsage?>(null) }
-    var usageLoading by remember { mutableStateOf(false) }
-
-    fun refresh() {
-        scope.launch {
-            loading = true; error = null
-            val result = withContext(Dispatchers.IO) { runCatching { repository.list(currentPath, searchQuery, showHidden, sort) } }
-            result.onSuccess { items = it }.onFailure { error = it.message; items = emptyList() }
-            loading = false
-        }
-    }
-    LaunchedEffect(currentPath, searchQuery, showHidden, sort) { refresh() }
-
-    fun openItem(item: StorageItem) {
-        if (item.isDirectory) onNavigate(item.path)
-        else if (isPlayable(item)) onPlay(item)
-        else openNonMediaFile(context, item)
-    }
-
-    val destPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        val req = pendingTransfer
-        if (uri != null && req != null) {
-            scope.launch {
-                withContext(Dispatchers.IO) {
-                    runCatching {
-                        if (req.item.isDirectory) {
-                            if (uri.toString().contains(req.item.path)) error("Cannot copy/move a folder into itself")
-                            if (repository.destinationExistsUri(uri, context.contentResolver, req.item.name)) error("Already exists in destination")
-                            repository.copyDirectoryToUri(req.item.path, uri, context.contentResolver)
-                            if (req.move) repository.delete(req.item.path)
-                        } else {
-                            if (repository.destinationExistsUri(uri, context.contentResolver, req.item.name)) error("Already exists in destination")
-                            repository.copyToUri(req.item.path, uri, context.contentResolver)
-                            if (req.move) repository.delete(req.item.path)
-                        }
-                    }
-                }
-                pendingTransfer = null; refresh()
-            }
-        } else pendingTransfer = null
-    }
-
-    fun handleAction(item: StorageItem, action: FileAction) {
-        when (action) {
-            FileAction.DETAILS -> detailsItem = item
-            FileAction.RENAME -> { renameItem = item; renameText = item.name }
-            FileAction.COPY -> { pendingTransfer = PendingTransfer(item, false); destPicker.launch(null) }
-            FileAction.MOVE -> { pendingTransfer = PendingTransfer(item, true); destPicker.launch(null) }
-            FileAction.DELETE -> deleteItem = item
-        }
-    }
-
-    val folderName = File(currentPath).name.ifBlank { "Storage" }
-    val canGoUp = rootPath != null && currentPath != rootPath
-
-    Scaffold(
-        topBar = {
-            Column {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(folderName, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                            Text(if (loading) "Loading…" else "${items.size} items", style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    },
-                    navigationIcon = { IconButton(onClick = { if (canGoUp) onNavigate(File(currentPath).parent ?: rootPath!!) else onBack() }) { Icon(Icons.Default.ArrowBack, "Back") } },
-                    actions = {
-                        IconButton(onClick = { showSearch = !showSearch }) { Icon(Icons.Default.Search, "Search") }
-                        IconButton(onClick = onToggleGrid) { Icon(if (gridView) Icons.Default.ViewList else Icons.Default.GridView, "View") }
-                        Box {
-                            IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, "More") }
-                            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                                DropdownMenuItem(text = { Text("New folder") }, leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) }, onClick = { showMenu = false; showCreateFolder = true })
-                                DropdownMenuItem(text = { Text("Storage usage") }, leadingIcon = { Icon(Icons.Default.PieChart, null) }, onClick = { showMenu = false; showUsage = true; usage = null; usageLoading = true; scope.launch { usage = withContext(Dispatchers.IO) { runCatching { repository.calculateUsage(currentPath) }.getOrNull() }; usageLoading = false } })
-                                DropdownMenuItem(text = { Text("Refresh") }, leadingIcon = { Icon(Icons.Default.Refresh, null) }, onClick = { showMenu = false; refresh() })
-                            }
-                        }
-                    }
-                )
-                if (showSearch) {
-                    OutlinedTextField(value = searchQuery, onValueChange = { searchQuery = it },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                        placeholder = { Text("Search") }, leadingIcon = { Icon(Icons.Default.Search, null) },
-                        trailingIcon = { if (searchQuery.isNotEmpty()) IconButton(onClick = { searchQuery = "" }) { Icon(Icons.Default.Close, null) } },
-                        singleLine = true)
-                }
-            }
-        },
-        floatingActionButton = { FloatingActionButton(onClick = { showCreateFolder = true }) { Icon(Icons.Default.CreateNewFolder, "New folder") } }
-    ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            BreadcrumbBar(currentPath, rootPath, onNavigate)
-            SortBarRow(sort)
-            when {
-                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                error != null -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) { Text(error!!, color = MaterialTheme.colorScheme.error) }
-                items.isEmpty() -> EmptyState(if (searchQuery.isNotEmpty()) "No results" else "This folder is empty")
-                gridView -> LazyVerticalGrid(columns = GridCells.Adaptive(110.dp), contentPadding = PaddingValues(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(items, key = { it.path }) { item -> FileGridItem(item, { openItem(item) }, { handleAction(item, it) }) }
-                }
-                else -> LazyColumn { items(items, key = { it.path }) { item ->
-                    FileListRow(item, { openItem(item) }, { handleAction(item, it) })
-                    HorizontalDivider(Modifier.padding(start = 72.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                }; item { Spacer(Modifier.height(80.dp)) } }
-            }
-        }
-    }
-
-    if (showCreateFolder) NameDialog("New folder", newFolderName, { newFolderName = it }, "Create", { showCreateFolder = false; newFolderName = "" }) {
-        scope.launch { withContext(Dispatchers.IO) { runCatching { repository.createFolder(currentPath, newFolderName) } }; showCreateFolder = false; newFolderName = ""; refresh() }
-    }
-    renameItem?.let { item -> NameDialog("Rename", renameText, { renameText = it }, "Save", { renameItem = null }) {
-        scope.launch { withContext(Dispatchers.IO) { runCatching { repository.rename(item.path, renameText) } }; renameItem = null; refresh() }
-    } }
-    deleteItem?.let { item -> AlertDialog(onDismissRequest = { deleteItem = null }, title = { Text("Delete ${item.name}?") },
-        text = { Text("This will permanently delete this ${if (item.isDirectory) "folder" else "file"}.") },
-        confirmButton = { TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { runCatching { repository.delete(item.path) } }; deleteItem = null; refresh() } }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
-        dismissButton = { TextButton(onClick = { deleteItem = null }) { Text("Cancel") } }) }
-    detailsItem?.let { item -> DetailsDialog(item) { detailsItem = null } }
-    if (showUsage) UsageDialog(usage, usageLoading) { showUsage = false }
-}
 
 // --- Category, Settings, Player, TV ---
 
@@ -595,7 +433,7 @@ private fun TvApp(
 // --- Shared UI components ---
 
 @Composable
-private fun BreadcrumbBar(currentPath: String, rootPath: String?, onNavigate: (String) -> Unit) {
+internal fun BreadcrumbBar(currentPath: String, rootPath: String?, onNavigate: (String) -> Unit) {
     val segments = buildList {
         val root = rootPath ?: return@buildList
         var p = currentPath
@@ -620,7 +458,7 @@ private fun BreadcrumbBar(currentPath: String, rootPath: String?, onNavigate: (S
 }
 
 @Composable
-private fun SortBarRow(sort: StorageSort) {
+internal fun SortBarRow(sort: StorageSort) {
     // sort is controlled by parent in this simplified UI; shown as label
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Default.SwapVert, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -630,7 +468,7 @@ private fun SortBarRow(sort: StorageSort) {
 }
 
 @Composable
-private fun EmptyState(msg: String) {
+internal fun EmptyState(msg: String) {
     Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(Icons.Outlined.FolderOpen, null, Modifier.size(72.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
@@ -641,7 +479,7 @@ private fun EmptyState(msg: String) {
 }
 
 @Composable
-private fun FileListRow(item: StorageItem, onClick: () -> Unit, onAction: (FileAction) -> Unit) {
+internal fun FileListRow(item: StorageItem, onClick: () -> Unit, onAction: (FileAction) -> Unit) {
     var menu by remember { mutableStateOf(false) }
     val (icon, tint) = fileIconAndTint(item)
     val sub = if (item.isDirectory) "Folder" else buildString { append(if (item.sizeKnown) formatSize(item.size) else "—"); if (item.lastModified > 0) append("  •  ${formatShortDate(item.lastModified)}") }
@@ -666,7 +504,7 @@ private fun FileListRow(item: StorageItem, onClick: () -> Unit, onAction: (FileA
 }
 
 @Composable
-private fun FileGridItem(item: StorageItem, onClick: () -> Unit, onAction: (FileAction) -> Unit) {
+internal fun FileGridItem(item: StorageItem, onClick: () -> Unit, onAction: (FileAction) -> Unit) {
     var menu by remember { mutableStateOf(false) }
     val (icon, tint) = fileIconAndTint(item)
     Card(onClick = onClick, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
@@ -687,7 +525,7 @@ private fun FileGridItem(item: StorageItem, onClick: () -> Unit, onAction: (File
 }
 
 @Composable
-private fun NameDialog(title: String, value: String, onValue: (String) -> Unit, confirm: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+internal fun NameDialog(title: String, value: String, onValue: (String) -> Unit, confirm: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
     AlertDialog(onDismissRequest = onDismiss, title = { Text(title) },
         text = { OutlinedTextField(value = value, onValueChange = onValue, singleLine = true, label = { Text("Name") }) },
         confirmButton = { TextButton(enabled = value.isNotBlank(), onClick = onConfirm) { Text(confirm) } },
@@ -695,7 +533,7 @@ private fun NameDialog(title: String, value: String, onValue: (String) -> Unit, 
 }
 
 @Composable
-private fun DetailsDialog(item: StorageItem, onDismiss: () -> Unit) {
+internal fun DetailsDialog(item: StorageItem, onDismiss: () -> Unit) {
     AlertDialog(onDismissRequest = onDismiss, title = { Text(item.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             DetailRow("Type", if (item.isDirectory) "Folder" else item.mimeType ?: "File")
@@ -706,7 +544,7 @@ private fun DetailsDialog(item: StorageItem, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun UsageDialog(usage: StorageUsage?, loading: Boolean, onDismiss: () -> Unit) {
+internal fun UsageDialog(usage: StorageUsage?, loading: Boolean, onDismiss: () -> Unit) {
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Storage usage") },
         text = {
             if (loading) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -719,11 +557,11 @@ private fun UsageDialog(usage: StorageUsage?, loading: Boolean, onDismiss: () ->
         }, confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } })
 }
 
-@Composable private fun DetailRow(label: String, value: String) {
+@Composable internal fun DetailRow(label: String, value: String) {
     Column { Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary); Text(value, style = MaterialTheme.typography.bodyMedium) }
 }
 
-private fun actionUi(a: FileAction): Pair<String, ImageVector> = when (a) {
+internal fun actionUi(a: FileAction): Pair<String, ImageVector> = when (a) {
     FileAction.DETAILS -> "Details" to Icons.Outlined.Info
     FileAction.RENAME -> "Rename" to Icons.Outlined.Edit
     FileAction.COPY -> "Copy to…" to Icons.Outlined.FileCopy
@@ -731,13 +569,3 @@ private fun actionUi(a: FileAction): Pair<String, ImageVector> = when (a) {
     FileAction.DELETE -> "Delete" to Icons.Outlined.Delete
 }
 
-private fun openNonMediaFile(context: Context, item: StorageItem) {
-    val file = File(item.path)
-    val uri: Uri = try { FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file) } catch (_: Exception) { Uri.fromFile(file) }
-    runCatching {
-        context.startActivity(Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, item.mimeType ?: "*/*")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        })
-    }
-}

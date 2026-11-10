@@ -1,24 +1,17 @@
 # Next development task
 
-## First action: establish a trustworthy baseline
-Do not immediately add features. Inspect the actual repository and determine whether the uploaded source was copied into the correct project root.
+## Baseline
+- CI is green on `kilo/adept-beacon-wln` (latest: run `42742824580`, commit `61e253a`). Confirm with `gh run list --branch kilo/adept-beacon-wln --limit 3` and inspect failures with `gh run view <id> --log-failed` if needed.
+- Keep changes small, buildable, and verified by CI (`gradle --no-daemon --max-workers=2 test` and `:app:assembleDebug`).
 
-1. Run `git status --short --branch` and inspect the top-level tree.
-2. Read `README.md`, Gradle files, manifest, and all Kotlin source.
-3. Confirm the project root is the directory containing `settings.gradle.kts`, root `build.gradle.kts`, `gradle.properties`, and `app/`.
-4. Check whether a Gradle wrapper exists. If absent and Gradle 8.11.1 is installed, generate a wrapper using `gradle wrapper --gradle-version 8.11.1`; do not add wrapper files by hand.
-5. Run `gradle --no-daemon --max-workers=2 test`.
-6. Run `gradle --no-daemon --max-workers=2 :app:assembleDebug`.
-7. Record exact failures and distinguish source errors from missing SDK, network, or toolchain setup.
+## Recommended next increments (pick highest value)
+1. **Browser robustness & UX:** improve SAF copy/move error handling and user feedback (show failures, handle conflicts/overwrite intentionally), and add progress/cancellation for long copy/move or recursive scans.
+2. **Navigation/state:** preserve/restore browser state predictably (back stack, root/path edge cases) and ensure “recent file” opens navigate to a useful location/action.
+3. **Media playback:** evolve `PlayerScreen`/`MediaPlaybackController` toward fuller controls (seek bar, duration/position), and plan `MediaSessionService` for background playback.
+4. **Codebase maintainability:** continue splitting large UI files only when it improves clarity (e.g. extract home/settings/player/TV into focused files if they grow), add KDoc for non-obvious flows, and add unit tests for repository/scan logic where platform-independent.
+5. **SMB:** replace `SmbRepository` placeholder with a minimal, testable connection/browse implementation (no credential logging/plaintext storage).
+6. **TV polish:** audit D-pad/focus order and remote behavior on key screens.
 
-## After baseline
-Choose the highest-value issue revealed by inspection. Recommended order:
-1. Fix compile/test failures and stabilize the baseline.
-2. Improve parent-folder navigation and SAF operation error handling.
-3. Add operation progress/cancellation for long copy/move/recursive scan work.
-4. Complete Media3 in-app controls and background playback.
-5. Implement functional SMB browsing.
-6. Improve TV focus and remote behavior.
-7. Validate USB OTG/SD on real devices.
-
-Do one coherent increment at a time. Update `PROJECT_STATUS.md` and this file after verified changes.
+## Device-only checks still needed
+- Physical phone and Android TV (focus/remote, playback, permissions).
+- USB OTG and SD-card storage roots/operations.
